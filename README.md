@@ -47,7 +47,9 @@ until that missing source tree is restored.
 - `read_osmo_glove.py` - COBS/protobuf serial decoder.
 - `trace_recorder.py` and replay tools - raw capture, replay, and verification.
 - `serial_trace_reader.py`, `firmware_diagnostics.py`, `firmware_profile.py` - host diagnostics.
+- `host/magcal/` - offline magnetometer collect, robust ellipsoid fit, Flash upload, and coverage monitor.
 - `host/docs/` - Chinese user guides and replay protocol notes.
+- `host/THOST_MANIFEST.md` - provenance and curated file map from the original `THost`.
 
 See [host/README.md](host/README.md) and
 [host/docs/使用说明.md](host/docs/使用说明.md).
@@ -66,6 +68,7 @@ Run one of the applications:
 python "host\3D力测试上位机.pyw"
 python "host\姿态测试上位机.pyw"
 python "host\纯数据预览.pyw"
+python "host\magcal\magcal_view.pyw"
 ```
 
 Or use the Windows launchers:
@@ -74,6 +77,7 @@ Or use the Windows launchers:
 run_3d_force.bat
 run_attitude.bat
 run_raw_preview.bat
+run_magcal_view.bat
 ```
 
 ## Firmware reproduction

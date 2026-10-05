@@ -11,6 +11,8 @@ for the OSMO/Bowie glove.
 | `姿态测试上位机.pyw` | 3D attitude, compass/yaw diagnostics, magnetic feature monitoring |
 | `纯数据预览.pyw` | Raw MAG / QUAT / META decoder and preview |
 | `force_3d_ui_launcher.pyw` | Single-instance launcher for the 3D force application |
+| `magcal/magcal.py` | Offline magnetometer collect / robust fit / calibration upload |
+| `magcal/magcal_view.pyw` | Live 24-cell spherical coverage monitor while recording |
 
 ## Shared modules
 
@@ -40,12 +42,20 @@ python "姿态测试上位机.pyw"
 python "纯数据预览.pyw"
 ```
 
+The offline magnetometer calibration CLI is in `magcal/`:
+
+```powershell
+python magcal\magcal.py --help
+python magcal\test_fit.py
+```
+
 Windows launchers are available from the repository root:
 
 ```text
 run_3d_force.bat
 run_attitude.bat
 run_raw_preview.bat
+run_magcal_view.bat
 ```
 
 ## Documentation
@@ -55,6 +65,9 @@ run_raw_preview.bat
 - `docs/REPLAY_PROTOCOL.md` - replay protocol details
 - `docs/FIX14_信息覆盖清单.md` - diagnostics coverage
 - `docs/FIX20_HOST_SYNC.md` - host synchronization notes
+- `magcal/README.md` - magnetometer calibration workflow and parameter contract
+- `THOST_MANIFEST.md` - how the original `THost` directory was curated into this repository
+- `magcal/lab/README.md` - archived calibration experiments and their limitations
 
 ## Verification
 
@@ -63,4 +76,5 @@ python "3D力测试上位机.pyw" --self-test
 python "姿态测试上位机.pyw" --self-test
 python verify_trace_recorder.py
 python verify_preview_trace.py
+python magcal\test_fit.py
 ```

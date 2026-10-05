@@ -11,7 +11,15 @@ force_iron_calibration.json
 force_direction_calibration.json
 recordings/
 diagnostics/
-magcal/
+host/magcal/*.npz
+host/magcal/**/*.npz
+host/magcal/*.blob
+host/magcal/**/*.blob
+host/magcal/*.bin
+host/magcal/**/*.bin
+host/magcal/*.csv
+host/magcal/**/*.csv
+host/magcal/__pycache__/
 logs/
 *.csv
 
