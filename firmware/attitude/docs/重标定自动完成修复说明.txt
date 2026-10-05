@@ -1,0 +1,23 @@
+重标定一直停在“标定采集中”的修复
+
+原因：
+- 旧逻辑中，按 H 启动的是显式标定 active=1。
+- active=1 只累积样本，不会自动调用求解器；只有按 J 才会执行一次求解。
+- 因此如果只按 H、转动后没有按 J，界面会一直显示“标定采集中 / 无结果”。
+
+修复：
+- H 显式标定期间也会按周期自动尝试求解。
+- 开机自动采集（active=2）与 H 使用同一套重试逻辑。
+- 覆盖不足、样本不足、残差过大会保持 active，继续累积并重试。
+- 第一次得到合格解后自动提交新标定，不需要再按 J。
+- J 仍保留为“立即强制结算”。
+
+主机侧合成测试：
+显式 H:
+partial:  valid=0 active=1 result=3 n=240   (覆盖不足，继续重试)
+continued:valid=1 active=2 result=1 n=956   (继续转动后自动成功)
+
+开机自动采集:
+startup auto: active=2 valid=0 result=0
+partial auto: active=2 valid=0 result=3 n=240
+continued auto: active=2 valid=1 result=1 n=956

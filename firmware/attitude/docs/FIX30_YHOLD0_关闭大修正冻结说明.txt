@@ -1,0 +1,28 @@
+FIX30-DIR3-NOHOLD-YHOLD0 改动说明 (2026-09-23)
+==============================================
+基线：FIX30-DIR3-NOHOLD
+产物：BowieGlove_Attitude_FIX30_DIR3_NOHOLD_YHOLD0.hex
+SHA256 88A910FC166A632A5A9463E7306554A1D8BCAE5CA6ECFECC4D23F0A4F8F9DF33
+text 304404  data 54460  bss 26760
+
+[改动] 关闭大修正路径的"先冻结、再步进"门限
+  文件：Core/Inc/glove/mag_fusion.h
+  MAG_YAW_HOLD_S:  0.2f  ->  0.0f
+
+  影响：mag_fusion.c 大修正分支
+        hold = MAG_YAW_HOLD_S * (1.0f - dn);
+  现在恒为 0，因此 yaw_hold_s >= hold 每拍成立：
+  进入大修正路径后不再冻结等待，每一拍都直接按 slew 限速推进一步。
+
+  原因：该冻结只是主动限速（防止强磁前沿先拽动输出、并消除"推一下停一下"），
+        用户确认要彻底关掉这个门限。
+
+  不受影响：
+    - clean 谓词照旧：磁场大小 / 倾角 / 双磁梯度 / 整手一致性四个物理门
+      + dir_lock（方向残差）+ 角速度上限，全部不变；
+    - slew 限速照旧：92 ~ 183 deg/s，由 yaw_trust 连续混合；
+    - 欠账 >= 20 度的全速回零分支本来就 hold = 0，行为不变；
+    - 诊断字段 yawd_hold_s（YF hold_s / P 行 hold_ms）现在恒为 0，
+      上位机"修正保持"不再点亮。
+
+回退点：FIX30-DIR3-NOHOLD（冻结上限 0.2s）

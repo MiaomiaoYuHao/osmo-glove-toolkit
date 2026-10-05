@@ -1,0 +1,23 @@
+FIX11 冻结清单
+================
+冻结日期: 2026-09-20
+状态: FROZEN
+说明: 不再修改核心滤波、门控、自动恢复和方向 bin 算法。
+
+固件哈希:
+aca603f24b565638f54f67250f7eedd864a5eb4b7df0e8aad6b0a4e15a500b47  BowieGlove_Attitude.elf
+f553a04a0d769f7d306d43f206323372c85f1932dcacc3e223ca9c9f28897e72  BowieGlove_Attitude.bin
+b125cb13c92c64ee839a10ffa025f0272a595498c299f3615fc4d5da8e63bc72  BowieGlove_Attitude.hex
+实机验证摘要:
+- 强磁期间可进入 COAST，不错误锁定强磁场。
+- 强磁拿开后，静止/微运动/正常多姿态转动均完成过恢复。
+- 最终状态 LOCKED 100%。
+- raw |m| 回到约 30～40 LSB。
+- model = diag，geo/feres 正常，hard_event/rejecting 清零。
+- 强磁过程未出现错误 rebase 或自动删除 last_good。
+
+已知边界:
+- 方向 bin 快速恢复依赖当前会话可信 B_prior。
+- 无 B_prior 时静止不可唯一恢复。
+- 软铁模型真实改变时需要完整 H/J 标定。
+- fixes 为累计硬铁折叠次数，不是错误计数。

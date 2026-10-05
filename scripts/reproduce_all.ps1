@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$releaseDir = Join-Path $projectRoot 'firmware\releases'
+$releaseDir = Join-Path $projectRoot 'firmware\releases\force'
 
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     throw 'python was not found in PATH. Install Python 3.12+ first.'

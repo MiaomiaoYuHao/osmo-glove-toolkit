@@ -1,43 +1,35 @@
-# Release 0.1.0 - Magnet stability and 3D force host
+# Release 0.2.0 - OSMO Glove Toolkit
 
 ## Contents
 
-- Complete Python source for the OSMO/Bowie 3D force application.
-- Hard/soft-iron ellipsoid calibration.
-- Repeated-rubbing six-direction calibration.
-- XY, XZ, YZ grids and vector projections.
-- Serial reconnect and connection watchdog.
-- BowieGlove firmware patch for magnetic-transient recovery.
-- Prebuilt HEX and BIN firmware images.
-- Bootstrap, build, flash, and full reproduction scripts.
+- Force / multi-magnet firmware source, patch, and prebuilt images.
+- Custom 9-DoF attitude firmware source and FINALV1 images.
+- Official Bosch NDOF single-magnet yaw images and vendor header.
+- Full compatible 6-DoF GAMERV images.
+- 3D force host, attitude host, raw preview, trace, diagnostics, and replay tools.
+- SHA256 manifests for every firmware release directory.
 
-## Firmware target
+## Verified
 
-- Upstream repository: `jessicayin/osmo_tactile_glove`
-- Base commit: `bfc7328`
-- MCU: STM32F446RET6
-- Toolchain used: GNU Arm `11.3.rel1`
-- Build result: `text 225524`, `data 1160`, `bss 30888`
+The force firmware reproduction was run from a fresh upstream clone at
+commit bfc7328 and matched the release byte for byte:
 
-## Verification
-
-The repository was tested by cloning the upstream repository from GitHub,
-checking out `bfc7328`, applying
-`firmware/patches/BowieGlove-magnet-stability.patch`, rebuilding from a clean
-`Debug` directory, and comparing the output hashes.
-
-```text
+~~~text
 REPRODUCTION_PASS=True
-3476FCAC78B1C88F6B4AB33D474C0181AB600D00F02D6282B0F167B595F58DB9  BowieGlove.bin
-89D6359A8F34E61A574F088E0C79FA7FE12AD9B68B232D6B33F8CB3C1C7841AB  BowieGlove.hex
-```
+BIN 3476FCAC78B1C88F6B4AB33D474C0181AB600D00F02D6282B0F167B595F58DB9
+HEX 89D6359A8F34E61A574F088E0C79FA7FE12AD9B68B232D6B33F8CB3C1C7841AB
+~~~
+
+The custom attitude and NDOF sources/releases are included, but the missing
+NDOF source directory and cross-machine attitude rebuild are still pending.
 
 ## Hardware status
 
-Host-side tests pass and the firmware builds reproducibly. The strong-magnet
-hardware regression still needs to be recorded on the physical glove.
+The strong-magnet hardware-in-the-loop regression still needs to be recorded on
+the physical glove. The code and downloadable release assets are complete.
 
 ## License
 
-MIT applies only to original host-side material authored by `lina130`.
-Upstream-derived files are excluded. See `LICENSE` and `NOTICE.md`.
+MIT applies only to original host-side material authored by lina130.
+Upstream-derived and vendor firmware material is excluded. See LICENSE and
+NOTICE.md.

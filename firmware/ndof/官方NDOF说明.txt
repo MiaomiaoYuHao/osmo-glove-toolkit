@@ -1,0 +1,13 @@
+官方 NDOF 单磁 Yaw 版本
+
+源码工程：
+C:\Users\18257\Desktop\Mocap\Xunbu_caphost_v6\_osmo_glove_research\firmware\BowieGlove_Attitude_NDOF
+
+固件镜像：
+Bosch_Shuttle3_BHI360_BMM350_Poll_bsxsam_ndof.fw.h
+
+说明：
+- BHI360 负责 6 轴 IMU 和 BSX NDOF 融合。
+- BMM350 #1 作为官方 NDOF 的外部磁力计，用于 yaw 抗漂移。
+- BMM350 #2 不参与官方 NDOF 原生融合。
+- 第二颗磁力计的后续用途另行通过 SDK/定制固件实现。

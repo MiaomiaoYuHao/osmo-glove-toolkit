@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$patchPath = Join-Path $projectRoot 'firmware\patches\BowieGlove-magnet-stability.patch'
+$patchPath = Join-Path $projectRoot 'firmware\force\patches\BowieGlove-magnet-stability.patch'
 
 if (Test-Path -LiteralPath $Destination) {
     throw "Destination already exists: $Destination. Choose a new empty path."

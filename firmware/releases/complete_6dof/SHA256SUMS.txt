@@ -1,0 +1,2 @@
+d2e3b101e02281555e74f48a37f76bd15460949cc88caa822bd359dcead6505c  BowieGlove_full_6dof_gamerv.bin
+71dd8c7527d6fb4bf181bedcfd1e3cf16d113fdd3122d672dec061c4e0623bb8  BowieGlove_full_6dof_gamerv.hex

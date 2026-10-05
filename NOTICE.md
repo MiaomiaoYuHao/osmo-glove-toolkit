@@ -1,7 +1,8 @@
 # Notice and attribution
 
-This project contains original host-side code by `lina130` and a compatibility
-patch for the upstream OSMO tactile glove project.
+This toolkit contains original host-side code by `lina130`, custom firmware
+variants derived from the upstream OSMO tactile glove project, and prebuilt
+variants using Bosch firmware material.
 
 Upstream project:
 
@@ -36,3 +37,9 @@ OSMO citation:
   year={2025}
 }
 ```
+## Additional variant note
+
+The custom attitude firmware under `firmware/attitude/BowieGlove_Attitude` and
+the official NDOF material under `firmware/ndof` are included for research and
+reproducibility. They are not relicensed by the toolkit MIT license. Bosch
+firmware headers remain subject to their original vendor terms.

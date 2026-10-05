@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RepoPath,
 
-    [string]$Patch = (Join-Path $PSScriptRoot '..\firmware\patches\BowieGlove-magnet-stability.patch')
+    [string]$Patch = (Join-Path $PSScriptRoot '..\firmware\force\patches\BowieGlove-magnet-stability.patch')
 )
 
 $ErrorActionPreference = 'Stop'

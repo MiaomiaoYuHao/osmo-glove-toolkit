@@ -1,0 +1,30 @@
+FIX12 高速运动动态重基准保护（候选验证版）
+==========================================
+
+目的：
+- 防止高速运动造成的动态磁误差写入 A/B/d。
+- 防止运动后的错误 Yaw 被自动接受为新的磁航向基准。
+- 运动后以有界速率恢复到原磁航向，姿态保持连续。
+- 强磁 hard_event 仍允许正常恢复，不牺牲既有强磁能力。
+
+实现：
+- 新增 motion guard：超过约 802 deg/s 进入动态保护，持续 0.5 s。
+- 动态保护与运动后恢复期间冻结 A/B/d、局部 d 和参考磁场学习。
+- 动态阶段只让模长、dip、梯度、fleet 等物理门控触发 hard_event，抑制纯 e_step 动态误触发。
+- 大航向误差在高速运动后不再 rebase 成新磁北，而是以约 14.3 deg/s 有界拉回。
+- 恢复完成后重新锚定 drift 估计并回到 LOCKED。
+- 显式标定加载不受运动恢复保护影响。
+
+仿真结果：
+- FIX11 @1000 deg/s：最终 Yaw 误差约 49 deg，BUG 复现。
+- FIX12 @1000 deg/s：最终 Yaw 误差约 0.94 deg，d 漂移 0，LOCKED。
+- FIX12 @2500 deg/s：PASS。
+- 强磁恢复回归：PASS。
+- 重标定/Yaw基准旧测试：与 FIX11 结果完全一致，无新增回归。
+
+文件 SHA256：
+DFD4C83C9BDE63160006BB3AEE39F1930DBE3FA7200BA8F81FE722EA05BF13B8  BowieGlove_Attitude_FIX12.elf
+CA61D178B71A075D2187F6071EAB0EC65D25E2F716301B889D2AFCF6EE66882D  BowieGlove_Attitude_FIX12.hex
+FED28191CCCB2BBB93D87E06E2F8378924C8290E8F31212F72113179E585B580  BowieGlove_Attitude_FIX12.bin
+
+状态：已烧录并校验成功；等待实机 1000 deg/s 运动后回归。

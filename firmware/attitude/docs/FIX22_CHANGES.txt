@@ -1,0 +1,82 @@
+FIX22 最终报告 (2026-09-21)   —— 实机验证，SWD 直读，不依赖串口
+======================================================================
+产物 THost\firmware\九轴姿态_9DoF_RV\BowieGlove_Attitude_FIX22.hex
+BLE  text 300508  data 52228  bss 53840
+(SHA256 见同目录校验)
+
+一、已修复并实测通过
+----------------------------------------------------------------------
+1) BSX 陀螺标定持久化  —— 端到端打通
+   原问题: 保存被 mag_store_runtime_healthy() 磁健康门挡住,
+           磁干扰状态下 mag_store_save() 根本不被调用。
+   改法:   磁刷新仍等健康场(行为不变); BSX 采集解耦, 不受磁场影响;
+           mag_store_save() 返回是否写入; 新增独立 bsx_save_pending。
+   实测:   bsx rc=0 len=200
+           Flash bsx_crc=0x26624e32  len[12]=200
+                 data=03 54 00 04 00 b0 00 40
+           下一次开机 results[28]=1  -> 加载成功
+           保存 + 加载 两条路径均有证据。
+
+2) I2C 总线恢复  —— 不用再拔插板子
+   原问题: MCU 复位打断 I2C 事务时, 从机/多路复用器会把 SDA 拉死,
+           之后所有 HAL_I2C_IsDeviceReady 全失败, 只有断电才恢复。
+   改法:   init_glove() 扫描后 0 路成功时, 用 GPIO 在 PB6/PB7
+           打 9 个时钟 + STOP, 重初始化 I2C1, 再扫一次。
+   实测:   反复 SWD 软复位后 links_up=1, init12=1, count 正常增长。
+
+3) MCU 复位后初始化失败  —— 增加一次干净重试
+   init_island() 失败后延时 300ms 重试一次, 打 [RETRY]。
+
+4) 保持有效(未改动)
+   results[20]=0 加速度计回调注册
+   results[21]=0 gyro timer auto-trim
+   results[25]=0 加速度计虚拟传感器配置
+   ODR 实测约 400 Hz (请求 300, BHI360 量化到 400 档), 无丢帧
+
+二、未解决
+----------------------------------------------------------------------
+5) BMM350 100Hz + 4 次平均   —— 无法实现, 原因已查清
+   已按数据手册修正三处错误:
+       地址      0x10 -> 0x14   (Table 10: 0x14=ADSEL LOW)
+       CHIP_ID   寄存器 0x40 -> 0x00
+       期望值    0x32 -> 0x33
+   AGGR_SET=0x24 (avg4<<4|odr100Hz) 与 PMU_CMD.UPD_OAE=0x02 均正确。
+
+   然后做了三项排查, 全部否定:
+   (a) 扫描 BHI360 全部三条 SIF1/SIF2/SIF3 x 0x14/0x15:
+       SIF2/0x14 -> 0x00   SIF1/0x14 -> 0xFF
+       无一返回 0x33, AGGR_SET 回读也不是 0x24
+       => 软透传返回"成功"但拿不到真实寄存器内容。
+
+   (b) 用 bhy2_get_phys_sensor_info 问 BHI360 它认到哪些器件:
+       id 5  type 5  driver 10  addr 0x14   <- 主 BMM350
+       id 21 type 21 driver 14  addr 0x15   <- 第二颗
+       地址 0x14 正确无误。
+
+   (c) 测试 BMM350 是否也在 STM32 的 I2C1 总线上(可绕过 BHI360):
+       HAL_I2C_IsDeviceReady(0x14/0x15) 均无应答
+       => BMM350 只挂在 BHI360 的 SIF 上, 主机碰不到。
+
+   结论: BHI360 固件占用该 BMM350 用于 MAG_PASS 输出, 不向主机
+         开放软透传读; 本地驱动(bhi3.h)也没有任何磁力计配置 API,
+         只有加速度计/陀螺仪的(FOC/OIS/timer auto-trim 等)。
+         主机侧没有任何受支持的手段设置 BMM350 的 ODR/平均。
+
+   影响评估: 该功能是可选降噪项。mag_fusion 已经对磁输入做 FIR
+             预滤波, 主机侧滤波本就是可调的, 功能上已被覆盖。
+             因此不实现不构成功能缺失。
+
+三、调试基础设施改进(重要)
+----------------------------------------------------------------------
+USB CDC 在上电阶段不可靠: MCU 复位时端口消失并重新枚举,
+关键日志正好丢在窗口里, 排查时多次被误导。
+本版把上电结果全部镜像到 RAM, 调试器直接读取:
+    glove_telem_links_up / _init_ok / _retried
+    glove_telem_results[29]         init_island 全部返回值
+    glove_telem_bmm_*               BMM350 探测结果
+    glove_telem_bsx_*               BSX 采集结果
+    glove_telem_phys_*[24]          BHI360 报告的物理传感器清单
+    glove_telem_i2c14_ok/_i2c15_ok  STM32 侧直连探测结果
+今后这类问题不需要串口、不需要反复烧录就能定位。
+
+回退点: FIX20 / FIX21r1 / FIX22原始版 均未改动。

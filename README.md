@@ -1,56 +1,56 @@
-# OSMO Magnet 3D Force
+# OSMO Glove Toolkit
 
-Magnetometer-based 3D force visualization, calibration, and firmware stability
-work for the OSMO/Bowie tactile glove.
+Custom firmware variants and Windows host tools for the OSMO/Bowie tactile glove.
 
-This repository publishes the original host-side work by
-[@lina130](https://github.com/lina130) together with a source patch for the
-upstream OSMO/BowieGlove firmware.
+This repository brings the complete work together instead of publishing only the
+3D force subproject:
+
+- 3D magnetic force firmware and host application
+- custom 9-DoF attitude / magnetic-yaw firmware and host application
+- official Bosch NDOF single-magnet yaw variant
+- full glove-compatible 6-DoF GAMERV build
+- calibration, diagnostics, trace recording, replay, and verification tools
+- prebuilt HEX/BIN files and SHA256 checksums
 
 > Upstream project: [jessicayin/osmo_tactile_glove](https://github.com/jessicayin/osmo_tactile_glove).
-> The upstream repository currently has no license file. The firmware patch
-> and generated protocol module are therefore not relicensed here. See
+> The upstream repository currently has no license file. Upstream-derived code,
+> vendor firmware, and patches are therefore not relicensed here. See
 > [NOTICE.md](NOTICE.md).
 
 ![3D force interface](docs/assets/3d_force_ui_grid.png)
 
 ![3D force demo](docs/assets/3d_force_demo.gif)
 
-## Features
+## Firmware variants
 
-- Dual-magnetometer differential force mode.
-- Real-time `Fx`, `Fy`, `Fz`, and `|F|` numeric display.
-- XY, XZ, and YZ force planes with vector projections.
-- Three-axis force history graph with auto-range and reset.
-- Dual-magnet median zero capture.
-- Hard-iron offset and soft-iron ellipsoid calibration.
-- Repeated-rubbing six-direction force-axis calibration.
-- Direction-calibration clear/reset action.
-- CSV recording and optional trace recording.
-- Serial reconnect and connection watchdog.
-- Atomic COBS frame transmission to avoid half-written USB frames.
-- Firmware recovery for magnetic transients, FIFO overflow, sensor errors,
-  BHI360 reset events, and stalled FIFO parsing.
+| Variant | Source | Prebuilt | Purpose |
+|---|---|---|---|
+| 3D force / Bowie multi-magnet firmware | `firmware/force/BowieGlove` | `firmware/releases/force` | Dual-magnet 3D force pipeline and stability fixes |
+| Custom 9-DoF attitude / yaw supervisor | `firmware/attitude/BowieGlove_Attitude` | `firmware/releases/attitude_9dof` | GAMERV + two-magnet yaw handling and magnetic disturbance recovery |
+| Official Bosch NDOF single-magnet yaw | vendor firmware header under `firmware/ndof` | `firmware/releases/attitude_ndof` | Official NDOF yaw reference using BMM350 #1 |
+| Full compatible 6-DoF GAMERV | Based on `firmware/force/BowieGlove` | `firmware/releases/complete_6dof` | Full 20-link glove compatibility build |
 
-## Repository layout
+The official NDOF source directory was not present in the local workspace when
+this toolkit was assembled. Its prebuilt images and the vendor firmware header
+are included; the exact NDOF source/configuration is not claimed as recoverable
+until that missing source tree is restored.
 
-```text
-host/                         Python 3D force application
-  utils/bowiepb/              Generated protocol module used by the host
-firmware/patches/             Patch for the upstream BowieGlove firmware
-docs/assets/                  Screenshots and GIF demo
-docs/USER_GUIDE.zh-CN.md      Chinese user guide
-requirements.txt
-run_3d_force.bat              Windows launcher
-```
+## Host applications
 
-## Host application quick start
+`host/` contains the Windows host tools:
 
-Requirements:
+- `3D力测试上位机.pyw` - dual-magnet 3D force display, calibration, plots, CSV.
+- `姿态测试上位机.pyw` - 3D attitude, magnetometer diagnostics, yaw supervisor UI.
+- `纯数据预览.pyw` - raw decoded MAG/QUAT/META preview.
+- `read_osmo_glove.py` - COBS/protobuf serial decoder.
+- `trace_recorder.py` and replay tools - raw capture, replay, and verification.
+- `serial_trace_reader.py`, `firmware_diagnostics.py`, `firmware_profile.py` - host diagnostics.
+- `host/docs/` - Chinese user guides and replay protocol notes.
 
-- Windows 10/11
-- Python 3.12 recommended
-- USB CDC device `2833:B015`
+See [host/README.md](host/README.md) and
+[host/docs/使用说明.md](host/docs/使用说明.md).
+
+## Quick start
 
 Install dependencies:
 
@@ -58,113 +58,57 @@ Install dependencies:
 python -m pip install -r requirements.txt
 ```
 
-Run the interface:
+Run one of the applications:
 
 ```powershell
 python "host\3D力测试上位机.pyw"
+python "host\姿态测试上位机.pyw"
+python "host\纯数据预览.pyw"
 ```
 
-Or double-click:
+Or use the Windows launchers:
 
 ```text
 run_3d_force.bat
+run_attitude.bat
+run_raw_preview.bat
 ```
 
-Run the built-in checks:
+## Firmware reproduction
 
-```powershell
-python "host\3D力测试上位机.pyw" --self-test
-```
-
-For a complete host test + upstream firmware reconstruction + clean build +
-byte-for-byte SHA256 comparison, run:
+The force-firmware patch is pinned to upstream commit `bfc7328`. The complete
+one-command verification is:
 
 ```powershell
 .\scripts\reproduce_all.ps1
 ```
 
-## Basic operation
+This clones upstream, checks out `bfc7328`, applies the force-firmware patch,
+repairs the upstream build paths, performs a clean build, and compares the
+result with `firmware/releases/force/SHA256SUMS.txt`.
 
-1. Connect the Bowie/OSMO USB device.
-2. Start the host application and connect to `COMx`.
-3. Place the magnetic skin at its resting position.
-4. Press `Z` or click `双磁零点`.
-5. Apply force and inspect the 3D vector and `Fx/Fy/Fz` values.
-6. Use `I` for hard/soft-iron calibration when required.
-7. Use the six-direction workflow when the force axes need orientation.
-8. Use `R` to reset the auto-range.
-
-See [docs/USER_GUIDE.zh-CN.md](docs/USER_GUIDE.zh-CN.md) for the detailed
-Chinese workflow, or [REPRODUCE.md](REPRODUCE.md) for source reconstruction,
-build, flash, and SHA256 verification instructions.
-
-Prebuilt release files are included under `firmware/releases/`; they can be
-attached to the GitHub Release page when publishing.
-
-## Firmware patch
-
-The patch targets the upstream `firmware/BowieGlove` project at commit
-`bfc7328`.
-
-```powershell
-git clone https://github.com/jessicayin/osmo_tactile_glove.git
-cd osmo_tactile_glove
-git checkout bfc7328
-git apply C:\path\to\BowieGlove-magnet-stability.patch
-```
-
-The patch adds or updates:
-
-- emergency USB servicing from the main loop
-- I2C retry and bus recovery
-- BHI360 reinitialization after sensor errors, FIFO overflow, or reset
-- retry after a failed reinitialization
-- zero-progress protection in the BHI360 FIFO parser
-- atomic USB CDC frame writes
-- independent watchdog support
-- stack-size and static-buffer fixes
-- firmware stability notes in `FIXES_20260925.md`
-
-Build with STM32CubeIDE or the project's existing GNU Arm Makefile. Do not
-commit `Debug/`, `build_*/`, `backup_*/`, `.elf`, `.hex`, `.bin`, `.map`, or
-`.list` files to Git. Attach release binaries in GitHub Releases instead.
-
-## Validation status
-
-Host-side automated checks currently pass:
+Verified result:
 
 ```text
-FORCE_SELF_TEST_PASS=True
-MATRIX_OK=True
-DIFFERENTIAL_OK=True
-ZERO_CAPTURE_OK=True
-ELLIPSOID_OK=True
-RUBBING_AXIS_OK=True
-SIX_DIRECTION_FIT_OK=True
-THREE_PLANE_GRID_OK=True
-VECTOR_PROJECTIONS_OK=True
-CANVAS_PROJECTION_OK=True
+REPRODUCTION_PASS=True
+BIN 3476FCAC78B1C88F6B4AB33D474C0181AB600D00F02D6282B0F167B595F58DB9
+HEX 89D6359A8F34E61A574F088E0C79FA7FE12AD9B68B232D6B33F8CB3C1C7841AB
 ```
 
-The firmware patch compiles with 0 errors in the local Debug build. The
-hardware-in-the-loop strong-magnet regression test still needs to be run on the
-physical glove before presenting it as fully validated.
+The custom attitude source is included at
+`firmware/attitude/BowieGlove_Attitude`. Its prebuilt release is included with
+SHA256 checksums. Reproduction instructions for the force build are complete;
+the attitude and NDOF variant build instructions are documented separately in
+`firmware/README.md`.
+
+## Upstream contribution
+
+The force-firmware stability fix was submitted to upstream as
+[jessicayin/osmo_tactile_glove PR #7](https://github.com/jessicayin/osmo_tactile_glove/pull/7).
 
 ## License
 
-The MIT license in this repository applies only to original material authored
-by `lina130`. Upstream-derived files are explicitly excluded. See
-[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
-
-## Citation
-
-If you use the upstream OSMO project, cite:
-
-```bibtex
-@article{yin2025osmo,
-  title={OSMO: Open-Source Tactile Glove for Human-to-Robot Skill Transfer},
-  author={Jessica Yin and Haozhi Qi and Youngsun Wi and Sayantan Kundu and Mike Lambeta and William Yang and Changhao Wang and Tingfan Wu and Jitendra Malik and Tess Hellebrekers},
-  journal={arXiv:2512.08920},
-  year={2025}
-}
-```
+The MIT license applies only to original material authored by `lina130`.
+Upstream-derived firmware, vendor firmware headers, generated protocol files,
+and patches are explicitly excluded. See [LICENSE](LICENSE) and
+[NOTICE.md](NOTICE.md).

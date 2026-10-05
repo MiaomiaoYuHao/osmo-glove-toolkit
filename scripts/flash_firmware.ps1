@@ -1,5 +1,5 @@
 param(
-    [string]$Firmware = (Join-Path $PSScriptRoot '..\firmware\releases\BowieGlove_magnet_recovery.bin'),
+    [string]$Firmware = (Join-Path $PSScriptRoot '..\firmware\releases\force\BowieGlove_magnet_recovery.bin'),
     [string]$Programmer = 'C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe'
 )
 

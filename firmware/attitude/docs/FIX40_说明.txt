@@ -1,0 +1,31 @@
+FIX40 冻结说明 (2026-09-23)
+============================
+产物：BowieGlove_Attitude_FIX40.bin / .hex
+SHA256(hex) = 362342C2902B1D69B167C9DF99A52638FC60B9BF2BEA3109602872A5E2027C11
+text 305212   data 54464   bss 26784
+
+【相对 FIX30 系列保留的改动】
+1. 方向残差门强度【运行时可调】（上位机诊断窗滑块 -> "T DIR <0..100>"）
+   默认 90%：门限 4.7 度，命中后 e = 1 + 3*0.9 = 3.7
+   映射：thr = 3 + (1-s)*17 度；e = 1 + 3*s；强度 0% = 等效关闭
+2. 大修正路径的"先冻结再步进"已关闭：MAG_YAW_HOLD_S = 0
+3. 干扰进入时的"yaw_corr 回退到安全快照"【已删除】
+   现在进 hard_event 只冻结（局部 w=0 跳过修正块），不再往回跳。
+   注：safe_yaw_corr 变量仍保留并刷新，供 mag_fusion_load() 保持换标定后航向连续。
+
+【完整保留的抗磁门】
+  物理门：磁场大小 / 磁倾角 / 单拍方向阶跃 / 慢漂移(仅仰角) / 双磁梯度 / 整手一致性
+  硬覆盖：水平分量过低、方向残差(dir_lock)
+  速率门：角速度上限
+  FIX11 事件机：hard_event / rejecting / weight / FE 复位 / safe 快照
+
+【已知未修的项（本版按用户要求保留原样）】
+  · Final output guard 只看 6 个物理门：方向门锁定期间仍会把 weight 擦回 100%、
+    status 写成 LOCKED -> 面板显示"已生效"但实际修正被跳过。
+  · 方向门命中 e = 1+3*s（>=3）会进 hard_event 并让局部 w 归零 ->
+    方向门频繁触发时修正被反复掐死，只有 e_lp 衰减到 2.5 以下才放行。
+
+【回退点】
+  FROZEN_FIX30_NOROLLBACK_D90_20260923   （与 FIX40 内容完全相同）
+  FROZEN_FIX30_DIRSOFT_GUARDFIX_20260923 （含 guard + 方向门降级，未采用）
+  FROZEN_FIX30_GUARDFIX_20260923         （只含 guard 修正，未采用）

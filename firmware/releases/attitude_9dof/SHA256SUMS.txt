@@ -1,0 +1,2 @@
+05d8604956db66a1aefc76e38894413a791c0b99e5cb3a00a8d30c20ed599adf  BowieGlove_Attitude_FINALV1.bin
+c0d68c640e27fd568bdf14a834ebc83fd185cd78272bea3366d01be46570d9b3  BowieGlove_Attitude_FINALV1.hex

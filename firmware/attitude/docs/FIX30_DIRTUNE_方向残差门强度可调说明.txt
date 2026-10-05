@@ -1,0 +1,44 @@
+FIX30-DIRTUNE 改动说明 (2026-09-23)
+===================================
+基线：FIX30-DIROFF（方向残差门被编译期关闭）
+产物：BowieGlove_Attitude_FIX30_DIRTUNE.hex
+SHA256 7276C8A7F4BA973C37A39CADB62B5E405B99E928FD9C94D7508EC0CA999E8715
+text 305412  data 54464  bss 26784
+
+[改动 1] 方向残差门重新启用，且门限/响应改为运行时可调
+  Core/Inc/glove/mag_fusion.h
+    MAG_DIR_GATE_ENABLE 0 -> 1
+    新增 MAG_DIR_THR_MAX_DEG = 20.0f
+    新增运行时接口: mag_fusion_set_dir_strength / _dir_strength / _dir_thr_deg
+  Core/Src/glove/mag_fusion.c
+    static float mf_dir_strength = 1.0f;   /* 全局，0..1 */
+    命中判定: dir_res > mag_fusion_dir_thr_deg()  ->  dir_lock_s = 0.5s
+    e 覆盖  : e = max(e, 1 + 3*strength)
+
+  强度映射（0..100%）：
+    0%   = 关闭（不置 dir_lock_s、不改 e）
+    1-49%  = 门限 19.8..11.6 度，响应 e=1.03..2.47  -> 只软降权，修正继续跑
+    50%  = 门限 11.5 度，e=2.50（正好 MAG_REJECT_AT）-> 该拍权重归零
+    51-99% = e=2.53..3.97，权重归零，但不进 hard_event
+    100% = 门限 3.0 度，e=4.00 = 原行为（进 hard_event，冻结修正）
+  dir_res 始终照算、照上报（YAW2 dir_res_deg / 上位机"方向一致性"）。
+
+[改动 2] 运行时下行命令
+  Core/Src/main.c: 'T' 开头的 ASCII 命令行（以 \n 结束），其余仍为单字符命令
+  Core/Src/glove/glove.c: glove_tune_command() / glove_set_dir_strength_pct()
+  协议: "T DIR <0..100>\n"
+  回执: "TUNE dir_strength=<pct> dir_thr_d100=<x100度> dir_emax_x100=<e*100>"
+  CONFIG 参数 p[17] 改为上报【当前有效】dir 门限（原来固定是编译期 3 度）。
+
+[改动 3] 上位机
+  THost/姿态测试上位机.pyw: "FIX30 磁修正门限/磁干扰诊断" 窗口顶部新增滑块
+    "方向残差门控强度"，实时显示 强度% / 等效门限° / 响应 e→x（档位）
+    拖动即下发 "T DIR <pct>\n"；每次轮询 'P' 时再重发一次，
+    所以 MCU 复位/换固件后无需人工重拨。
+
+[验证] 实机 P 表对比（同一静止状态，手边没有强磁源）
+  强度100%: eIn=4.00(硬事件)  stuck 累积
+  强度 50%: eIn=2.50  w(护栏后)=100  rej=0  hev=0  stuck 累积
+  强度 33%: eIn=0.38  good 累积(3.3)  stuck=0
+  强度  0%: eIn=0.41  good 累积(7.0)  stuck=0  -> 等效关闭
+  回退点：FIX30-DIROFF（方向残差门完全关闭）

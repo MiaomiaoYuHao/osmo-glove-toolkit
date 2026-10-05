@@ -10,6 +10,8 @@ force_3d_ui_restart.json
 force_iron_calibration.json
 force_direction_calibration.json
 recordings/
+diagnostics/
+magcal/
 logs/
 *.csv
 
@@ -32,8 +34,8 @@ logs/
 .DS_Store
 Thumbs.db
 # Reproducible release artifacts (small HEX/BIN only)
-!firmware/releases/*.hex
-!firmware/releases/*.bin
+!firmware/releases/**/*.hex
+!firmware/releases/**/*.bin
 
 # Reproduction workspace
 build/

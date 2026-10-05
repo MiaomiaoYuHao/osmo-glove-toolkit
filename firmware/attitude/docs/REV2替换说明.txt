@@ -1,0 +1,14 @@
+已按要求整文件替换：
+- Core/Src/glove/mag_fusion.c
+- Core/Inc/glove/mag_fusion.h
+
+旧版备份：
+- mag_fusion.c.bak_before_paste_rev2
+- mag_fusion.h.bak_before_paste_rev2
+
+兼容性修改：
+- glove.c 中旧字段 f->rc_applied 改为 rev2 提供的 mag_fusion_fixes(f)。
+
+编译结果：
+- 0 error
+- 已生成新的 ELF/BIN/HEX 并覆盖九轴姿态_9DoF_RV 目录。

@@ -1,0 +1,2 @@
+5384b992eef8f7cf032515df262bf1fefecaf9a665fb136c2b4bbbb78fcb6346  BowieGlove_Attitude_NDOF.bin
+d2eeac330c4e695b53e66d40d105dd72ed6732208c24c217e2cad339f7791c80  BowieGlove_Attitude_NDOF.hex
