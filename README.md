@@ -21,6 +21,8 @@ This repository brings the complete work together instead of publishing only the
 
 ![3D force demo](docs/assets/3d_force_demo.gif)
 
+![Attitude interface](docs/assets/shot_1.png)
+
 ## Firmware variants
 
 | Variant | Source | Prebuilt | Purpose |
