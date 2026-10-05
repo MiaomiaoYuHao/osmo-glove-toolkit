@@ -1,0 +1,2 @@
+89d6359a8f34e61a574f088e0c79fa7fe12ad9b68b232d6b33f8cb3c1c7841ab  BowieGlove_magnet_recovery.hex
+3476fcac78b1c88f6b4ab33d474c0181ab600d00f02d6282b0f167b595f58db9  BowieGlove_magnet_recovery.bin

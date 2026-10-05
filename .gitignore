@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime output
+3d_force_ui_status.json
+force_3d_ui_restart.json
+force_iron_calibration.json
+force_direction_calibration.json
+recordings/
+logs/
+*.csv
+
+# Build artifacts
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.exe
+*.zip
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Reproducible release artifacts (small HEX/BIN only)
+!firmware/releases/*.hex
+!firmware/releases/*.bin
+
+# Reproduction workspace
+build/

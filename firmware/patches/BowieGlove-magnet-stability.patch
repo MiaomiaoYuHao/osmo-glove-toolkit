@@ -1,0 +1,1440 @@
+diff --git a/firmware/BowieGlove/BowieGlove.ioc b/firmware/BowieGlove/BowieGlove.ioc
+index f8473ee..d4ba10b 100644
+--- a/firmware/BowieGlove/BowieGlove.ioc
++++ b/firmware/BowieGlove/BowieGlove.ioc
+@@ -149,7 +149,7 @@ ProjectManager.ProjectFileName=BowieGlove.ioc
+ ProjectManager.ProjectName=BowieGlove
+ ProjectManager.ProjectStructure=
+ ProjectManager.RegisterCallBack=
+-ProjectManager.StackSize=0x400
++ProjectManager.StackSize=0x1000
+ ProjectManager.TargetToolchain=STM32CubeIDE
+ ProjectManager.ToolChainLocation=
+ ProjectManager.UAScriptAfterPath=
+diff --git a/firmware/BowieGlove/Core/Inc/glove/bhi360.h b/firmware/BowieGlove/Core/Inc/glove/bhi360.h
+index 3af5b4a..c2615d0 100644
+--- a/firmware/BowieGlove/Core/Inc/glove/bhi360.h
++++ b/firmware/BowieGlove/Core/Inc/glove/bhi360.h
+@@ -35,6 +35,9 @@ typedef struct mag_data_dev {
+ 	uint32_t count;
+ 	bool init;
+ 	struct bhy2_dev *dev;
++	uint8_t present;
++	uint32_t last_data_ms;
++	uint8_t recover_requested;
+ } t_mag_info;
+ 
+ //int8_t bhi360_init(struct bhy2_dev *dev);
+diff --git a/firmware/BowieGlove/Core/Inc/glove/common.h b/firmware/BowieGlove/Core/Inc/glove/common.h
+index e6935ef..529f6a3 100644
+--- a/firmware/BowieGlove/Core/Inc/glove/common.h
++++ b/firmware/BowieGlove/Core/Inc/glove/common.h
+@@ -80,6 +80,8 @@ void setup_interfaces(bool reset_power, enum bhy2_intf intf);
+ void close_interfaces(enum bhy2_intf intf);
+ int8_t bhy2_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, void *intf_ptr);
+ int8_t bhy2_i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr);
++void bowie_i2c_recover(void);
++void bowie_i2c_recover(void);
+ void bhy2_delay_us(uint32_t us, void *private_data);
+ bool get_interrupt_status(void);
+ 
+diff --git a/firmware/BowieGlove/Core/Inc/glove/debug_log.h b/firmware/BowieGlove/Core/Inc/glove/debug_log.h
+new file mode 100644
+index 0000000..3d50f2c
+--- /dev/null
++++ b/firmware/BowieGlove/Core/Inc/glove/debug_log.h
+@@ -0,0 +1,20 @@
++#ifndef INC_GLOVE_DEBUG_LOG_H_
++#define INC_GLOVE_DEBUG_LOG_H_
++
++#include <stdio.h>
++
++/*
++ * Production firmware must not use the same CDC endpoint for text and binary
++ * COBS frames.  Set BOWIE_DEBUG_PRINT to 1 only in a dedicated diagnostic build.
++ */
++#ifndef BOWIE_DEBUG_PRINT
++#define BOWIE_DEBUG_PRINT 0
++#endif
++
++#if BOWIE_DEBUG_PRINT
++#define BOWIE_LOG(...) printf(__VA_ARGS__)
++#else
++#define BOWIE_LOG(...) do { } while (0)
++#endif
++
++#endif /* INC_GLOVE_DEBUG_LOG_H_ */
+diff --git a/firmware/BowieGlove/Core/Inc/glove/usb_service.h b/firmware/BowieGlove/Core/Inc/glove/usb_service.h
+new file mode 100644
+index 0000000..346d9f6
+--- /dev/null
++++ b/firmware/BowieGlove/Core/Inc/glove/usb_service.h
+@@ -0,0 +1,8 @@
++#ifndef INC_GLOVE_USB_SERVICE_H_
++#define INC_GLOVE_USB_SERVICE_H_
++
++void bowie_usb_poll(void);
++void bowie_usb_note_tx_success(void);
++void bowie_usb_note_tx_failure(void);
++
++#endif /* INC_GLOVE_USB_SERVICE_H_ */
+diff --git a/firmware/BowieGlove/Core/Inc/glove/watchdog.h b/firmware/BowieGlove/Core/Inc/glove/watchdog.h
+new file mode 100644
+index 0000000..ab497b8
+--- /dev/null
++++ b/firmware/BowieGlove/Core/Inc/glove/watchdog.h
+@@ -0,0 +1,40 @@
++#ifndef INC_GLOVE_WATCHDOG_H_
++#define INC_GLOVE_WATCHDOG_H_
++
++#include "main.h"
++
++#ifndef BOWIE_IWDG_ENABLE
++#define BOWIE_IWDG_ENABLE 1
++#endif
++
++/* LSI ~32 kHz, /64 prescaler, 2047 ticks => about 4.1 seconds. */
++#define BOWIE_IWDG_PRESCALER 4U
++#define BOWIE_IWDG_RELOAD    2047U
++
++static inline void bowie_watchdog_init(void)
++{
++#if BOWIE_IWDG_ENABLE
++    uint32_t started_ms;
++
++    IWDG->KR = 0xCCCCU; /* Start IWDG first, then allow register updates. */
++    IWDG->KR = 0x5555U;
++    IWDG->PR = BOWIE_IWDG_PRESCALER;
++    IWDG->RLR = BOWIE_IWDG_RELOAD;
++
++    started_ms = HAL_GetTick();
++    while (((IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU)) != 0U) &&
++           ((uint32_t)(HAL_GetTick() - started_ms) < 100U))
++    {
++    }
++    IWDG->KR = 0xAAAAU;
++#endif
++}
++
++static inline void bowie_watchdog_feed(void)
++{
++#if BOWIE_IWDG_ENABLE
++    IWDG->KR = 0xAAAAU;
++#endif
++}
++
++#endif /* INC_GLOVE_WATCHDOG_H_ */
+diff --git a/firmware/BowieGlove/Core/Inc/main.h b/firmware/BowieGlove/Core/Inc/main.h
+index 41cb8d5..7045d3a 100644
+--- a/firmware/BowieGlove/Core/Inc/main.h
++++ b/firmware/BowieGlove/Core/Inc/main.h
+@@ -27,6 +27,9 @@ extern "C" {
+ #endif
+ 
+ /* Includes ------------------------------------------------------------------*/
++#ifdef UNUSED
++#undef UNUSED
++#endif
+ #include "stm32f4xx_hal.h"
+ 
+ /* Private includes ----------------------------------------------------------*/
+diff --git a/firmware/BowieGlove/Core/Inc/usb/tusb_config.h b/firmware/BowieGlove/Core/Inc/usb/tusb_config.h
+index 4e0f3c6..c3f2fe6 100644
+--- a/firmware/BowieGlove/Core/Inc/usb/tusb_config.h
++++ b/firmware/BowieGlove/Core/Inc/usb/tusb_config.h
+@@ -114,7 +114,7 @@ extern "C" {
+ // #define CFG_TUD_CDC_TX_BUFSIZE   (TUD_OPT_HIGH_SPEED ? 512 : 64)
+ 
+ #define CFG_TUD_CDC_RX_BUFSIZE 512
+-#define CFG_TUD_CDC_TX_BUFSIZE 512
++#define CFG_TUD_CDC_TX_BUFSIZE 4096
+ 
+ // CDC Endpoint transfer buffer size, more is faster
+ // #define CFG_TUD_CDC_EP_BUFSIZE   (TUD_OPT_HIGH_SPEED ? 512 : 64)
+diff --git a/firmware/BowieGlove/Core/Src/glove/bhi360.c b/firmware/BowieGlove/Core/Src/glove/bhi360.c
+index 53ecf73..4151fc3 100644
+--- a/firmware/BowieGlove/Core/Src/glove/bhi360.c
++++ b/firmware/BowieGlove/Core/Src/glove/bhi360.c
+@@ -14,6 +14,9 @@
+ #include "bhi360.h"
+ #include "comms/bowie.pb.h"
+ #include "glove.h"
++#include "glove/debug_log.h"
++#include "glove/watchdog.h"
++#include "glove/usb_service.h"
+ 
+ int8_t bhi360_init(struct bhy2_dev *dev, struct mag_data_dev *device){
+ 	int8_t rslt = BHY2_OK;
+@@ -36,6 +39,8 @@ int8_t upload_firmware_partly(struct bhy2_dev *dev)
+ 
+     for (uint32_t i = 0; (i < len) && (rslt == BHY2_OK); i += incr)
+     {
++        bowie_watchdog_feed();
++        bowie_usb_poll();
+         if (incr > (len - i)) /* If last payload */
+         {
+             incr = len - i;
+@@ -47,10 +52,10 @@ int8_t upload_firmware_partly(struct bhy2_dev *dev)
+ 
+         rslt = bhy2_upload_firmware_to_ram_partly(&bhy2_firmware_image[i], len, i, incr, dev);
+ 
+-//        printf("%.2f%% complete\r", (float)(i + incr) / (float)len * 100.0f);
++//        BOWIE_LOG("%.2f%% complete\r", (float)(i + incr) / (float)len * 100.0f);
+     }
+ 
+-//    printf("\n");
++//    BOWIE_LOG("\n");
+ 
+     return rslt;
+ }
+@@ -66,7 +71,7 @@ int8_t bhi360_upload_firmware(uint8_t boot_stat, struct bhy2_dev *dev)
+     //		results[8] = bhy2_boot_from_ram(glove_devices[idx].dev);
+ 
+ 
+-//    printf("Loading firmware into RAM.\r\n");
++//    BOWIE_LOG("Loading firmware into RAM.\r\n");
+ 
+     rslt = upload_firmware_partly(dev);
+ //    rslt = bhy2_upload_firmware_to_ram(bhy2_firmware_image, sizeof(bhy2_firmware_image), dev);
+@@ -74,7 +79,7 @@ int8_t bhi360_upload_firmware(uint8_t boot_stat, struct bhy2_dev *dev)
+ //    temp_rslt = bhy2_get_error_value(&sensor_error, dev);
+ //    if (sensor_error)
+ //    {
+-//        printf("%s\r\n", get_sensor_error_text(sensor_error));
++//        BOWIE_LOG("%s\r\n", get_sensor_error_text(sensor_error));
+ //    }
+     if(rslt != BHY2_OK)
+     {
+@@ -84,14 +89,14 @@ int8_t bhi360_upload_firmware(uint8_t boot_stat, struct bhy2_dev *dev)
+ //    print_api_error(temp_rslt, dev);
+ 
+ 
+-//    printf("Booting from RAM.\r\n");
++//    BOWIE_LOG("Booting from RAM.\r\n");
+     rslt = bhy2_boot_from_ram(dev);
+-    printf("boot_from_ram: %d\r\n", rslt);
++    BOWIE_LOG("boot_from_ram: %d\r\n", rslt);
+ 
+ //    temp_rslt = bhy2_get_error_value(&sensor_error, dev);
+ //    if (sensor_error)
+ //    {
+-//        printf("%s\r\n", get_sensor_error_text(sensor_error));
++//        BOWIE_LOG("%s\r\n", get_sensor_error_text(sensor_error));
+ //    }
+ 
+ //    print_api_error(rslt, dev);
+@@ -112,6 +117,7 @@ void parse_quaternion(const struct bhy2_fifo_parse_data_info *callback_info, voi
+     }
+ 
+     bhy2_parse_quaternion(callback_info->data_ptr, &data);
++    dev->last_data_ms = HAL_GetTick();
+ 
+     uint64_t timestamp = *callback_info->time_stamp; /* Store the last timestamp */
+ 
+@@ -138,6 +144,7 @@ void parse_magnetometer(const struct bhy2_fifo_parse_data_info *callback_info, v
+ 	}
+ 
+ 	bhy2_parse_xyz(callback_info->data_ptr, &data);
++	dev->last_data_ms = HAL_GetTick();
+ 
+ 	uint64_t timestamp = *callback_info->time_stamp; /* Store the last timestamp */
+ 
+@@ -146,7 +153,7 @@ void parse_magnetometer(const struct bhy2_fifo_parse_data_info *callback_info, v
+ 	ns = (uint32_t)(timestamp - (s * UINT64_C(1000000000)));
+ 
+ 	//encode and send to usb
+-//	printf("original parse event\r\n");
++//	BOWIE_LOG("original parse event\r\n");
+ 	glove_send_mag_data(dev->count, s, ns, dev->finger, dev->link, dev->sensor_id, data.x, data.y, data.z);
+ 
+ }
+@@ -164,6 +171,7 @@ void parse_magnetometer_meta(const struct bhy2_fifo_parse_data_info *callback_in
+ 	}
+ 
+ 	bhy2_parse_xyz(callback_info->data_ptr, &data);
++	dev->last_data_ms = HAL_GetTick();
+ 
+ 	uint64_t timestamp = *callback_info->time_stamp; /* Store the last timestamp */
+ 
+@@ -172,7 +180,7 @@ void parse_magnetometer_meta(const struct bhy2_fifo_parse_data_info *callback_in
+ 	ns = (uint32_t)(timestamp - (s * UINT64_C(1000000000)));
+ 
+ 	//encode and send to usb
+-//	printf("meta parse event\r\n");
++//	BOWIE_LOG("meta parse event\r\n");
+ 	glove_send_mag_data(dev->count, s, ns, dev->finger, dev->link, dev->sensor_id+20, data.x, data.y, data.z);
+ 
+ 
+@@ -180,7 +188,7 @@ void parse_magnetometer_meta(const struct bhy2_fifo_parse_data_info *callback_in
+ 
+ void parse_meta_event(const struct bhy2_fifo_parse_data_info *callback_info, void *callback_ref)
+ {
+-    (void)callback_ref;
++    struct mag_data_dev *dev = (struct mag_data_dev *)callback_ref;
+     uint8_t meta_event_type = callback_info->data_ptr[0];
+     uint8_t byte1 = callback_info->data_ptr[1];
+     uint8_t byte2 = callback_info->data_ptr[2];
+@@ -199,94 +207,82 @@ void parse_meta_event(const struct bhy2_fifo_parse_data_info *callback_info, voi
+         return;
+     }
+ 
++    (void)event_text;
+     switch (meta_event_type)
+     {
+         case BHY2_META_EVENT_FLUSH_COMPLETE:
+-            printf("%s Flush complete for sensor id %u\r\n", event_text, byte1);
++            BOWIE_LOG("%s Flush complete for sensor id %u\r\n", event_text, byte1);
+             break;
+         case BHY2_META_EVENT_SAMPLE_RATE_CHANGED:
+-            printf("%s Sample rate changed for sensor id %u\r\n", event_text, byte1);
++            BOWIE_LOG("%s Sample rate changed for sensor id %u\r\n", event_text, byte1);
+             break;
+         case BHY2_META_EVENT_POWER_MODE_CHANGED:
+-            printf("%s Power mode changed for sensor id %u\r\n", event_text, byte1);
++            BOWIE_LOG("%s Power mode changed for sensor id %u\r\n", event_text, byte1);
+             break;
+         case BHY2_META_EVENT_ALGORITHM_EVENTS:
+-            printf("%s Algorithm event\r\n", event_text);
++            BOWIE_LOG("%s Algorithm event\r\n", event_text);
+             break;
+         case BHY2_META_EVENT_SENSOR_STATUS:
+-            printf("%s Accuracy for sensor id %u changed to %u\r\n", event_text, byte1, byte2);
++            BOWIE_LOG("%s Accuracy for sensor id %u changed to %u\r\n", event_text, byte1, byte2);
+             break;
+         case BHY2_META_EVENT_BSX_DO_STEPS_MAIN:
+-            printf("%s BSX event (do steps main)\r\n", event_text);
++            BOWIE_LOG("%s BSX event (do steps main)\r\n", event_text);
+             break;
+         case BHY2_META_EVENT_BSX_DO_STEPS_CALIB:
+-            printf("%s BSX event (do steps calib)\r\n", event_text);
++            BOWIE_LOG("%s BSX event (do steps calib)\r\n", event_text);
+             break;
+         case BHY2_META_EVENT_BSX_GET_OUTPUT_SIGNAL:
+-            printf("%s BSX event (get output signal)\r\n", event_text);
++            BOWIE_LOG("%s BSX event (get output signal)\r\n", event_text);
+             break;
+         case BHY2_META_EVENT_SENSOR_ERROR:
+-            printf("%s Sensor id %u reported error 0x%02X\r\n", event_text, byte1, byte2);
++            if (dev) dev->recover_requested = 1U;
++            BOWIE_LOG("%s Sensor id %u reported error 0x%02X\r\n", event_text, byte1, byte2);
+             break;
+         case BHY2_META_EVENT_FIFO_OVERFLOW:
+-            printf("%s FIFO overflow\r\n", event_text);
++            if (dev) dev->recover_requested = 1U;
++            BOWIE_LOG("%s FIFO overflow\r\n", event_text);
+             break;
+         case BHY2_META_EVENT_DYNAMIC_RANGE_CHANGED:
+-            printf("%s Dynamic range changed for sensor id %u\r\n", event_text, byte1);
++            BOWIE_LOG("%s Dynamic range changed for sensor id %u\r\n", event_text, byte1);
+             break;
+         case BHY2_META_EVENT_FIFO_WATERMARK:
+-            printf("%s FIFO watermark reached\r\n", event_text);
++            BOWIE_LOG("%s FIFO watermark reached\r\n", event_text);
+             break;
+         case BHY2_META_EVENT_INITIALIZED:
+-            printf("%s Firmware initialized. Firmware version %u\r\n", event_text, ((uint16_t)byte2 << 8) | byte1);
++            BOWIE_LOG("%s Firmware initialized. Firmware version %u\r\n", event_text, ((uint16_t)byte2 << 8) | byte1);
+             break;
+         case BHY2_META_TRANSFER_CAUSE:
+-            printf("%s Transfer cause for sensor id %u\r\n", event_text, byte1);
++            BOWIE_LOG("%s Transfer cause for sensor id %u\r\n", event_text, byte1);
+             break;
+         case BHY2_META_EVENT_SENSOR_FRAMEWORK:
+-            printf("%s Sensor framework event for sensor id %u\r\n", event_text, byte1);
++            BOWIE_LOG("%s Sensor framework event for sensor id %u\r\n", event_text, byte1);
+             break;
+         case BHY2_META_EVENT_RESET:
+-            printf("%s Reset event %d, 0x%02X,  0x%01X\r\n", event_text, meta_event_type, byte1, byte2);
+-            ///error checking
+-            uint8_t error_code = 0;
+-            uint8_t result;
+-            result = bhy2_get_error_reg(BHY2_REG_INT_STATUS, &error_code, glove_devices[0].dev);
+-			printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_INT_STATUS, result, error_code);
+-
+-			result = bhy2_get_error_reg(BHY2_REG_ERROR_VALUE, &error_code, glove_devices[0].dev);
+-			printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_ERROR_VALUE, result, error_code);
+-
+-			result = bhy2_get_error_reg(BHY2_REG_ERROR_AUX, &error_code, glove_devices[0].dev);
+-			printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_ERROR_AUX, result, error_code);
+-
+-			result = bhy2_get_error_reg(BHY2_REG_DEBUG_VALUE, &error_code, glove_devices[0].dev);
+-			printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_DEBUG_VALUE, result, error_code);
+-
+-			result = bhy2_get_error_reg(BHY2_REG_DEBUG_STATE, &error_code, glove_devices[0].dev);
+-			printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_DEBUG_STATE, result, error_code);
+-
+-			/**
+-			 * @brief Function to get the post mortem data
+-			 * @param[out] post_mortem  : Reference to the data buffer to store the post mortem data
+-			 * @param[in] buffer_len    : Length of the data buffer
+-			 * @param[out] actual_len   : Actual length of the post mortem data
+-			 * @param[in] dev           : Device reference
+-			 * @return API error codes
+-			 */
+-//			int8_t bhy2_get_post_mortem_data(uint8_t *post_mortem, uint32_t buffer_len, uint32_t *actual_len, struct bhy2_dev *dev);
+-
+-			struct bhy2_post_mortem post_mortem_data = { 0 };
+-			uint32_t pmlen = 0;
+-			printf("size of postmortem struct: %d", sizeof(struct bhy2_post_mortem));
+-			result = get_post_mortem_data(&post_mortem_data, glove_devices[0].dev);
+-//			result = bhy2_get_post_mortem_data(&post_mortem_data, sizeof(struct bhy2_post_mortem), &pmlen, glove_devices[0].dev);
+-			printf("Post mortem data: %d", result);
++            if (dev) dev->recover_requested = 1U;
++#if BOWIE_DEBUG_PRINT
++            BOWIE_LOG("%s Reset event %d, 0x%02X,  0x%01X\r\n", event_text, meta_event_type, byte1, byte2);
++            {
++                uint8_t error_code = 0U;
++                uint8_t result = 0U;
++                (void)result;
++                result = bhy2_get_error_reg(BHY2_REG_INT_STATUS, &error_code, dev->dev);
++                BOWIE_LOG("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_INT_STATUS, result, error_code);
++                result = bhy2_get_error_reg(BHY2_REG_ERROR_VALUE, &error_code, dev->dev);
++                BOWIE_LOG("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_ERROR_VALUE, result, error_code);
++                result = bhy2_get_error_reg(BHY2_REG_ERROR_AUX, &error_code, dev->dev);
++                BOWIE_LOG("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_ERROR_AUX, result, error_code);
++                {
++                    struct bhy2_post_mortem post_mortem_data = { 0 };
++                    (void)get_post_mortem_data(&post_mortem_data, dev->dev);
++                    BOWIE_LOG("Post mortem data collected\r\n");
++                }
++            }
++#endif
+             break;
+         case BHY2_META_EVENT_SPACER:
+             break;
+         default:
+-            printf("%s Unknown meta event with id: %u\r\n", event_text, meta_event_type);
++            BOWIE_LOG("%s Unknown meta event with id: %u\r\n", event_text, meta_event_type);
+             break;
+     }
+ }
+diff --git a/firmware/BowieGlove/Core/Src/glove/common.c b/firmware/BowieGlove/Core/Src/glove/common.c
+index 9a04580..58ac26d 100644
+--- a/firmware/BowieGlove/Core/Src/glove/common.c
++++ b/firmware/BowieGlove/Core/Src/glove/common.c
+@@ -46,6 +46,8 @@
+ #include "i2c.h"
+ #include "tim.h"
+ #include "bhi360.h"
++#include "glove/debug_log.h"
++#include "glove/debug_log.h"
+ 
+ //#define BHA260_SHUTTLE_ID  0x139
+ //#define BHI260_SHUTTLE_ID  0x119
+@@ -53,36 +55,78 @@
+ //#define DEV_ADDRESS_B 0x3C
+ 
+ 
++static int8_t bowie_i2c_hal_result(HAL_StatusTypeDef result)
++{
++    return (result == HAL_OK) ? BHY2_OK : BHY2_E_IO;
++}
++
++void bowie_i2c_recover(void)
++{
++    static volatile uint8_t recovering = 0U;
++    if (recovering)
++    {
++        return;
++    }
++    recovering = 1U;
++    (void)HAL_I2C_DeInit(&hi2c1);
++    MX_I2C1_Init();
++    recovering = 0U;
++}
++
+ int8_t bhy2_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, void *intf_ptr)
+ {
+-    (void)intf_ptr;
+-    struct mag_data_dev* dev;
+-    dev = intf_ptr;
++    struct mag_data_dev *dev = (struct mag_data_dev *)intf_ptr;
++    uint16_t dev_address;
++    HAL_StatusTypeDef result = HAL_ERROR;
++    uint8_t attempt;
+ 
+-    uint16_t DevAddress = dev->dev_addr;
+-    return HAL_I2C_Mem_Read(&hi2c1, (DevAddress<<1), (uint16_t) reg_addr, sizeof(reg_addr), reg_data, (uint16_t) length, 25);
+-//    return HAL_I2C_Mem_Read_IT(&hi2c1, (DevAddress<<1), (uint16_t) reg_addr, sizeof(reg_addr), reg_data, (uint16_t) length);
++    if (dev == NULL)
++    {
++        return BHY2_E_NULL_PTR;
++    }
+ 
++    dev_address = dev->dev_addr;
++    for (attempt = 0U; attempt < 2U; attempt++)
++    {
++        result = HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(dev_address << 1),
++                                  (uint16_t)reg_addr, I2C_MEMADD_SIZE_8BIT,
++                                  reg_data, (uint16_t)length, 25U);
++        if (result == HAL_OK)
++        {
++            break;
++        }
++    }
++
++    return bowie_i2c_hal_result(result);
+ }
+ 
+ //HAL_I2C_Mem_Write(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint16_t MemAddress, uint16_t MemAddSize, uint8_t *pData, uint16_t Size, uint32_t Timeout)
+ 
+ int8_t bhy2_i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr)
+ {
+-//    (void)intf_ptr;
+-    struct mag_data_dev* dev;
+-    dev = intf_ptr;
++    struct mag_data_dev *dev = (struct mag_data_dev *)intf_ptr;
++    uint16_t dev_address;
++    HAL_StatusTypeDef result = HAL_ERROR;
++    uint8_t attempt;
+ 
+-    uint16_t DevAddress = dev->dev_addr;
+-    uint16_t MemAddress = (uint16_t) reg_addr;
+-    uint16_t MemAddSize = sizeof(MemAddress);
+-    uint16_t Size = (uint16_t) length;
+-    uint32_t Timeout = 50;
+-    HAL_StatusTypeDef result = HAL_I2C_Mem_Write(&hi2c1, (DevAddress<<1), MemAddress, 1, reg_data, Size, Timeout);
+-    return result;
+-//    return HAL_I2C_Mem_Write_IT(&hi2c1, (DevAddress<<1), (uint16_t) reg_addr, sizeof(reg_addr), reg_data, (uint16_t) length);
++    if (dev == NULL || reg_data == NULL)
++    {
++        return BHY2_E_NULL_PTR;
++    }
+ 
++    dev_address = dev->dev_addr;
++    for (attempt = 0U; attempt < 2U; attempt++)
++    {
++        result = HAL_I2C_Mem_Write(&hi2c1, (uint16_t)(dev_address << 1),
++                                   (uint16_t)reg_addr, I2C_MEMADD_SIZE_8BIT,
++                                   (uint8_t *)reg_data, (uint16_t)length, 50U);
++        if (result == HAL_OK)
++        {
++            break;
++        }
++    }
+ 
++    return bowie_i2c_hal_result(result);
+ }
+ 
+ void bhy2_delay_us(uint32_t us, void *private_data)
+@@ -662,7 +706,7 @@ void print_api_error(int8_t rslt, struct bhy2_dev *dev)
+ {
+     if (rslt != BHY2_OK)
+     {
+-        printf("%s\r\n", get_api_error(rslt));
++        BOWIE_LOG("%s\r\n", get_api_error(rslt));
+ 
+         exit(0);
+     }
+@@ -671,5 +715,6 @@ void print_api_error(int8_t rslt, struct bhy2_dev *dev)
+ bool get_interrupt_status(void)
+ {
+ 
++    return false;
+ }
+ 
+diff --git a/firmware/BowieGlove/Core/Src/glove/glove.c b/firmware/BowieGlove/Core/Src/glove/glove.c
+index 10afa5c..de9c748 100644
+--- a/firmware/BowieGlove/Core/Src/glove/glove.c
++++ b/firmware/BowieGlove/Core/Src/glove/glove.c
+@@ -18,6 +18,9 @@
+ #include "pb_encode.h"
+ #include "pb_decode.h"
+ #include "tusb.h"
++#include "glove/debug_log.h"
++#include "glove/watchdog.h"
++#include "glove/usb_service.h"
+ 
+ 
+ //easy reference for init below
+@@ -35,6 +38,15 @@
+ 
+ 
+ struct bhy2_dev bhy2_devices[NUM_DEVICES] = {0};
++static uint8_t glove_work_buffer[WORK_BUFFER_SIZE];
++static uint8_t mux_current_channel = 0xFFU;
++static uint8_t device_error_count[NUM_DEVICES] = {0};
++static uint32_t device_last_reinit_ms[NUM_DEVICES] = {0};
++
++#define GLOVE_I2C_RECOVER_AFTER 3U
++#define GLOVE_REINIT_AFTER       8U
++#define GLOVE_REINIT_COOLDOWN_MS 10000U
++#define GLOVE_RETRY_AFTER_FAILED_INIT_MS 2000U
+ // Note on sensor_id, until bosch updates firmware at end of month, we do not have access to sensor_id=2
+ //struct mag_data_dev glove_devices[NUM_DEVICES] = {
+ //		{bowie_Finger_pinky, 	1, 1, 0, 0x3B, 0, 0, NULL},
+@@ -91,7 +103,8 @@ void glove_mux_reset() {
+ 	mux_chan[0] = 0x00;
+ 
+ //	uint8_t mux_reset_addr = (MUX_ADDR)<<1;
+-	HAL_I2C_Master_Transmit(&hi2c1, mux_addr, mux_chan, 1, 100);
++	(void)HAL_I2C_Master_Transmit(&hi2c1, mux_addr, mux_chan, 1, 100);
++    mux_current_channel = 0xFFU;
+ }
+ 
+ void scan_mux_channel(uint8_t channel)
+@@ -105,7 +118,7 @@ void scan_mux_channel(uint8_t channel)
+ 		ret = HAL_I2C_IsDeviceReady(&hi2c1, (i << 1), 3, 25);
+ 		if (ret == HAL_OK) /* No ACK Received At That Address */
+ 		{
+-			printf("Channel %d found device at: %X \r\n", channel, i);
++			BOWIE_LOG("Channel %d found device at: %X \r\n", channel, i);
+ 		}
+ 	}
+ }
+@@ -115,54 +128,86 @@ void scan_mux_channel(uint8_t channel)
+  *
+  */
+ HAL_StatusTypeDef glove_mux_set_channel(uint8_t channel) {
+-
+-//	glove_mux_reset();
+-	if(channel < 8)
+-	{
+-		uint8_t result;
+-		uint16_t mux_addr = (MUX_ADDR)<<1;
+-		uint8_t control_register[1];
+-		control_register[0] = ((uint8_t)1<<channel);
+-		result = HAL_I2C_Master_Transmit(&hi2c1, mux_addr, control_register, 1, 100);
+-		return result;
+-	}
+-	else
+-	{
+-		return HAL_ERROR;
+-	}
+-
++    uint8_t control_register[1];
++    uint16_t mux_addr = (MUX_ADDR) << 1;
++    HAL_StatusTypeDef result;
++
++    if (channel >= 8U)
++    {
++        return HAL_ERROR;
++    }
++    if (channel == mux_current_channel)
++    {
++        return HAL_OK;
++    }
++
++    control_register[0] = (uint8_t)((uint8_t)1U << channel);
++    result = HAL_I2C_Master_Transmit(&hi2c1, mux_addr, control_register, 1U, 100U);
++    if (result == HAL_OK)
++    {
++        mux_current_channel = channel;
++        bhy2_delay_us(100U, NULL);
++    }
++    else
++    {
++        mux_current_channel = 0xFFU;
++    }
++    return result;
+ }
+ 
+ void init_glove(){
+ 
+-	uint8_t i, channel, result;
++	uint8_t i, channel;
++	HAL_StatusTypeDef mux_result;
++	HAL_StatusTypeDef probe_result;
++	int8_t init_result;
++
+ 	for (i = 0; i < NUM_DEVICES; i++) {
++		bowie_watchdog_feed();
++		bowie_usb_poll();
+ 		channel = glove_devices[i].mux_chan;
+- 		result = glove_mux_set_channel(channel);
+ 		glove_devices[i].dev = &bhy2_devices[i];
+ 		glove_devices[i].init = false;
+-		if(result == HAL_OK)
++		glove_devices[i].present = false;
++		glove_devices[i].recover_requested = 0U;
++		probe_result = HAL_ERROR;
++
++		mux_result = glove_mux_set_channel(channel);
++		if (mux_result == HAL_OK)
++		{
++			HAL_Delay(2);
++			/* Do not spend time loading firmware into an empty slot. */
++			probe_result = HAL_I2C_IsDeviceReady(
++				&hi2c1,
++				(uint16_t)(glove_devices[i].dev_addr << 1),
++				2,
++				20);
++		}
++
++		if (probe_result == HAL_OK)
+ 		{
+-			// init and save pointer to bhy2_dev
+-			result = init_island(i); // initialize device, load firmware, and setup sensors
+-			if(result == 0)
++			glove_devices[i].present = true;
++			device_last_reinit_ms[i] = HAL_GetTick();
++			init_result = init_island(i);
++			if (init_result == 0)
+ 			{
+ 				glove_devices[i].init = true;
++				glove_devices[i].last_data_ms = HAL_GetTick();
+ 			}
+ 		}
+-		printf("[%s] Finger: %d, Link: %d, Mux_Chan: %d, Dev_addr: %X, Init: %s \r\n",
+-				(glove_devices[i].init) ? "PASS" : "FAIL",
++
++		BOWIE_LOG("[%s] Finger: %d, Link: %d, Mux_Chan: %d, Dev_addr: %X, Init: %s \r\n",
++				(glove_devices[i].init) ? "PASS" : ((probe_result == HAL_OK) ? "FAIL" : "SKIP"),
+ 				glove_devices[i].finger,
+ 				glove_devices[i].link,
+ 				glove_devices[i].mux_chan,
+ 				glove_devices[i].dev_addr,
+ 				(glove_devices[i].init) ? "true" : "false");
+-
+-
+ 	}
+ }
+ 
+ int8_t init_island(uint8_t idx){
++	bowie_watchdog_feed();
+ 
+ 	uint8_t result = 0;
+ 	uint8_t NUM_RESULTS = 19;
+@@ -180,7 +225,7 @@ int8_t init_island(uint8_t idx){
+  	results[2] = bhy2_get_product_id(&product_id, glove_devices[idx].dev);
+ 	results[3] = bhy2_get_chip_id(&chip_id, glove_devices[idx].dev);
+ 
+-//	printf("\tlink %d, init: %d, soft_reset: %d, product_id: %d, chip_id: %d\r\n", idx, results[0], results[1], results[2], results[3]);
++//	BOWIE_LOG("\tlink %d, init: %d, soft_reset: %d, product_id: %d, chip_id: %d\r\n", idx, results[0], results[1], results[2], results[3]);
+ 
+ 	if (product_id != BHY2_PRODUCT_ID)
+ 	{
+@@ -191,43 +236,43 @@ int8_t init_island(uint8_t idx){
+ 	chip_ctrl = BHY2_CHIP_CTRL_TURBO_ENABLE; //BHY2_CHIP_CTRL_TURBO_ENABLE; // //
+ 	results[4] = bhy2_set_chip_ctrl(chip_ctrl, glove_devices[idx].dev);
+ 
+-//	printf("\tlink %d, set_chip_ctrl: %d\r\n", idx, results[4]);
++//	BOWIE_LOG("\tlink %d, set_chip_ctrl: %d\r\n", idx, results[4]);
+ 
+ 	// host interrupt control, TODO confirm settings
+ //	hintr_ctrl = BHY2_ICTL_DISABLE_FAULT|BHY2_ICTL_DISABLE_FIFO_W| BHY2_ICTL_DISABLE_FIFO_NW |BHY2_ICTL_DISABLE_STATUS_FIFO | BHY2_ICTL_DISABLE_DEBUG;
+ 	hintr_ctrl = BHY2_ICTL_ACTIVE_LOW;
+ //	hintr_ctrl = BHY2_ICTL_DISABLE_STATUS_FIFO | BHY2_ICTL_DISABLE_DEBUG;
+ 	results[5] = bhy2_set_host_interrupt_ctrl(hintr_ctrl, glove_devices[idx].dev);
+-//	printf("\tlink %d, set_host_interrupt_ctrl: %d\r\n", idx, results[5]);
++//	BOWIE_LOG("\tlink %d, set_host_interrupt_ctrl: %d\r\n", idx, results[5]);
+ //	print_api_error(result1, &glove_devices[idx].dev);
+ //	bhy2_get_host_interrupt_ctrl(&hintr_ctrl, glove_devices[idx].dev);
+ //	print_api_error(result1, &glove_devices[idx].dev);
+ 
+-//	printf("Host interrupt control\r\n");
+-//	printf("    Wake up FIFO %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_FIFO_W) ? "disabled" : "enabled");
+-//	printf("    Non wake up FIFO %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_FIFO_NW) ? "disabled" : "enabled");
+-//	printf("    Status FIFO %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_STATUS_FIFO) ? "disabled" : "enabled");
+-//	printf("    Debugging %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_DEBUG) ? "disabled" : "enabled");
+-//	printf("    Fault %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_FAULT) ? "disabled" : "enabled");
+-//	printf("    Interrupt is %s.\r\n", (hintr_ctrl & BHY2_ICTL_ACTIVE_LOW) ? "active low" : "active high");
+-//	printf("    Interrupt is %s triggered.\r\n", (hintr_ctrl & BHY2_ICTL_EDGE) ? "pulse" : "level");
+-//	printf("    Interrupt pin drive is %s.\r\n", (hintr_ctrl & BHY2_ICTL_OPEN_DRAIN) ? "open drain" : "push-pull");
++//	BOWIE_LOG("Host interrupt control\r\n");
++//	BOWIE_LOG("    Wake up FIFO %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_FIFO_W) ? "disabled" : "enabled");
++//	BOWIE_LOG("    Non wake up FIFO %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_FIFO_NW) ? "disabled" : "enabled");
++//	BOWIE_LOG("    Status FIFO %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_STATUS_FIFO) ? "disabled" : "enabled");
++//	BOWIE_LOG("    Debugging %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_DEBUG) ? "disabled" : "enabled");
++//	BOWIE_LOG("    Fault %s.\r\n", (hintr_ctrl & BHY2_ICTL_DISABLE_FAULT) ? "disabled" : "enabled");
++//	BOWIE_LOG("    Interrupt is %s.\r\n", (hintr_ctrl & BHY2_ICTL_ACTIVE_LOW) ? "active low" : "active high");
++//	BOWIE_LOG("    Interrupt is %s triggered.\r\n", (hintr_ctrl & BHY2_ICTL_EDGE) ? "pulse" : "level");
++//	BOWIE_LOG("    Interrupt pin drive is %s.\r\n", (hintr_ctrl & BHY2_ICTL_OPEN_DRAIN) ? "open drain" : "push-pull");
+ //
+ 	/* Configure the host interface */
+ 	hif_ctrl = 0;
+ 	results[6] = bhy2_set_host_intf_ctrl(hif_ctrl, glove_devices[idx].dev);
+-//	printf("\tlink %d, set_host_intf_ctrl: %d\r\n", idx, results[6]);
++//	BOWIE_LOG("\tlink %d, set_host_intf_ctrl: %d\r\n", idx, results[6]);
+ 
+ 	/* Check the host control settings */
+ 	uint8_t host_ctrl = 0;
+ 	results[7] = bhy2_set_host_ctrl(host_ctrl, glove_devices[idx].dev);
+-//	printf("\tlink %d, sset_host_ctrl: %d\r\n", idx, results[7]);
++//	BOWIE_LOG("\tlink %d, sset_host_ctrl: %d\r\n", idx, results[7]);
+ 
+ 
+ //	results[7] = bhy2_get_virt_sensor_list(glove_devices[idx].dev);
+ 	/* Check if the sensor is ready to load firmware */
+ 	results[8] = bhy2_get_boot_status(&boot_status, glove_devices[idx].dev);
+-//	printf("\tlink %d, get_boot_status: %d\r\n", idx, results[8]);
++//	BOWIE_LOG("\tlink %d, get_boot_status: %d\r\n", idx, results[8]);
+ 
+ 	if (boot_status & BHY2_BST_HOST_INTERFACE_READY)
+ 	{
+@@ -236,7 +281,7 @@ int8_t init_island(uint8_t idx){
+ 
+ 	    if(results[8] != BHY2_OK)
+ 	    {
+-	    	printf("BAD UPLOAD! ");
++	    	BOWIE_LOG("BAD UPLOAD! ");
+ 	    	return results[8];
+ 	    }
+ 
+@@ -244,36 +289,36 @@ int8_t init_island(uint8_t idx){
+ 
+ 	    if(results[8] != BHY2_OK)
+ 	    {
+-	    	printf("BAD BOOT! ");
++	    	BOWIE_LOG("BAD BOOT! ");
+ 	    	return results[8];
+ 	    }
+ 
+ 		results[9] = bhy2_get_kernel_version(&version, glove_devices[idx].dev);
+-		results[10] = bhy2_register_fifo_parse_callback(BHY2_SYS_ID_META_EVENT, parse_meta_event, NULL, glove_devices[idx].dev);
+-		results[11] = bhy2_register_fifo_parse_callback(BHY2_SYS_ID_META_EVENT_WU, parse_meta_event, NULL, glove_devices[idx].dev);
++		results[10] = bhy2_register_fifo_parse_callback(BHY2_SYS_ID_META_EVENT, parse_meta_event, &glove_devices[idx], glove_devices[idx].dev);
++		results[11] = bhy2_register_fifo_parse_callback(BHY2_SYS_ID_META_EVENT_WU, parse_meta_event, &glove_devices[idx], glove_devices[idx].dev);
+ 		results[12] = bhy2_register_fifo_parse_callback(QUAT_SENSOR_ID, parse_quaternion, &glove_devices[idx], glove_devices[idx].dev);
+ 		results[13] = bhy2_register_fifo_parse_callback(MAG_ID, parse_magnetometer, &glove_devices[idx], glove_devices[idx].dev);
+ 		results[14] = bhy2_register_fifo_parse_callback(BHY2_SENSOR_ID_MAG_PASS_META, parse_magnetometer_meta, &glove_devices[idx], glove_devices[idx].dev);
+ 
+-//		printf("\tlink %d, bhi360_upload_firmware: %d\r\n", idx, results[8]);
+-//		printf("\tlink %d, bhy2_get_kernel_version: %d\r\n", idx, results[9]);
+-//		printf("\tlink %d, 1register_fifo_parse_callback: %d\r\n", idx, results[10]);
+-//		printf("\tlink %d, 2register_fifo_parse_callback: %d\r\n", idx, results[11]);
+-//		printf("\tlink %d, 3register_fifo_parse_callback: %d\r\n", idx, results[12]);
+-//		printf("\tlink %d, 4register_fifo_parse_callback: %d\r\n", idx, results[13]);
++//		BOWIE_LOG("\tlink %d, bhi360_upload_firmware: %d\r\n", idx, results[8]);
++//		BOWIE_LOG("\tlink %d, bhy2_get_kernel_version: %d\r\n", idx, results[9]);
++//		BOWIE_LOG("\tlink %d, 1register_fifo_parse_callback: %d\r\n", idx, results[10]);
++//		BOWIE_LOG("\tlink %d, 2register_fifo_parse_callback: %d\r\n", idx, results[11]);
++//		BOWIE_LOG("\tlink %d, 3register_fifo_parse_callback: %d\r\n", idx, results[12]);
++//		BOWIE_LOG("\tlink %d, 4register_fifo_parse_callback: %d\r\n", idx, results[13]);
+ 
+ 
+ 	}
+ 	else
+ 	{
+-//		printf("Host interface not ready. Exiting\r\n");
++//		BOWIE_LOG("Host interface not ready. Exiting\r\n");
+ 		//TODO: turn off all the LEDS?
+ 		return ERROR;
+ 	}
+ 
+ 	/* Update the callback table to enable parsing of sensor data */
+ 	results[15] = bhy2_update_virtual_sensor_list(glove_devices[idx].dev);
+-//	printf("\tlink %d, bhy2_update_virtual_sensor_list: %d\r\n", idx, results[14]);
++//	BOWIE_LOG("\tlink %d, bhy2_update_virtual_sensor_list: %d\r\n", idx, results[14]);
+ 
+ //	results[14] = bhy2_get_virt_sensor_list(glove_devices[idx].dev);
+ 
+@@ -284,7 +329,7 @@ int8_t init_island(uint8_t idx){
+ //		result = bhy2_get_phys_sensor_info(i, &info, glove_devices[idx].dev);
+ //		if(result==HAL_OK)
+ //		{
+-//			printf("found phys sensor!");
++//			BOWIE_LOG("found phys sensor!");
+ //		}
+ //	}
+ 
+@@ -300,16 +345,16 @@ int8_t init_island(uint8_t idx){
+ 	uint32_t report_latency_ms = 0; /* Report immediately */
+ //	results[15] = 0;
+ 	results[16] = bhy2_set_virt_sensor_cfg(QUAT_SENSOR_ID, sample_rate, report_latency_ms, glove_devices[idx].dev);
+-//	printf("\tlink %d, bhy2_set_virt_sensor_cfg: %d\r\n", idx, results[15]);
++//	BOWIE_LOG("\tlink %d, bhy2_set_virt_sensor_cfg: %d\r\n", idx, results[15]);
+ 
+-//	printf("Enable %s at %.2fHz.\r\n", get_sensor_name(QUAT_SENSOR_ID), sample_rate);
++//	BOWIE_LOG("Enable %s at %.2fHz.\r\n", get_sensor_name(QUAT_SENSOR_ID), sample_rate);
+ 
+ 	results[17] = bhy2_set_virt_sensor_cfg(MAG_ID, sample_rate, report_latency_ms, glove_devices[idx].dev);
+ 
+ 	results[18] = bhy2_set_virt_sensor_cfg(BHY2_SENSOR_ID_MAG_PASS_META, sample_rate, report_latency_ms, glove_devices[idx].dev);
+-//	printf("\tlink %d, bhy2_set_virt_sensor_cfg: %d\r\n", idx, results[16]);
++//	BOWIE_LOG("\tlink %d, bhy2_set_virt_sensor_cfg: %d\r\n", idx, results[16]);
+ 
+-//	printf("Enable %s at %.2fHz.\r\n", get_sensor_name(MAG_ID), sample_rate);
++//	BOWIE_LOG("Enable %s at %.2fHz.\r\n", get_sensor_name(MAG_ID), sample_rate);
+ 
+ 	uint8_t i;
+ 	for(i=0; i< NUM_RESULTS; i++)
+@@ -317,72 +362,147 @@ int8_t init_island(uint8_t idx){
+ 		// combine all the error reports into one. Will need to check this function for more detail on the failure mode
+ 		result = result | results[i];
+ 	}
+-//	printf("FINAL RESULT: %d\r\n", result);
++//	BOWIE_LOG("FINAL RESULT: %d\r\n", result);
+ 	return result;
+ 
+ }
+ 
+-void glove_update_data()
++static void glove_handle_device_error(uint8_t idx)
+ {
+-
+-	// run through all the properly initialized devices
+-	// check fifos for available data
+-	// if data is available, the registered callbacks will be activated
+-	// NOTE: if we cannot scan through this list FASTER than the next data ready, it will get stuck in a loop on one sensor only.
+-
+-	uint8_t idx;
+-	uint8_t channel, result;
+-	uint8_t error_code;
+-//	uint32_t count = 0;
+-//	uint32_t NUM_READS = 100;
+-	uint8_t work_buffer[WORK_BUFFER_SIZE];
+-
+-//	HAL_GPIO_WritePin(GPIOA, RED_LED_STATUS_Pin, GPIO_PIN_RESET);
+-//	int32_t start = HAL_GetTick();
+-	for(idx=0; idx < NUM_DEVICES; idx++)
+-	{
+-
+-		// TODO: add error checking to skip sensor if data line is corrupted during movement
+-		if(glove_devices[idx].init == true)
+-		{
+-			// TODO: can optimize by checking current mux channel before sending another command
+-			channel = glove_devices[idx].mux_chan;
+-			result = glove_mux_set_channel(channel);
+-			if(result==HAL_OK)
+-			{
+-
+- 				result = bhy2_get_and_process_fifo(work_buffer, WORK_BUFFER_SIZE, glove_devices[idx].dev);
+-//
+-// 				if(result==HAL_OK){
+-//					result = bhy2_get_error_reg(BHY2_REG_INT_STATUS, &error_code, glove_devices[idx].dev);
+-//					printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_INT_STATUS, result, error_code);
+-//
+-//					result = bhy2_get_error_reg(BHY2_REG_ERROR_VALUE, &error_code, glove_devices[idx].dev);
+-//					printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_ERROR_VALUE, result, error_code);
+-//
+-//					result = bhy2_get_error_reg(BHY2_REG_ERROR_AUX, &error_code, glove_devices[idx].dev);
+-//					printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_ERROR_AUX, result, error_code);
+-//
+-//					result = bhy2_get_error_reg(BHY2_REG_DEBUG_VALUE, &error_code, glove_devices[idx].dev);
+-//					printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_DEBUG_VALUE, result, error_code);
+-//
+-//					result = bhy2_get_error_reg(BHY2_REG_DEBUG_STATE, &error_code, glove_devices[idx].dev);
+-//					printf("Register: 0x%02X, Error Code: %d, 0x%02X\r\n", BHY2_REG_DEBUG_STATE, result, error_code);
+-// 				}
+-			}
+-
+-		}
+-
+-	}
+-//	int32_t stop =  HAL_GetTick();
+-//	int32_t elapsed = stop - start;
+-//	printf("elapsed time: %d\r\n", elapsed);
+-//	HAL_GPIO_WritePin(GPIOA, RED_LED_STATUS_Pin, GPIO_PIN_SET);
+-
+-
++    uint32_t now;
++
++    if (idx >= NUM_DEVICES)
++    {
++        return;
++    }
++
++    if (device_error_count[idx] < 0xFFU)
++    {
++        device_error_count[idx]++;
++    }
++
++    if (device_error_count[idx] == GLOVE_I2C_RECOVER_AFTER)
++    {
++        BOWIE_LOG("link %u: I2C recovery after repeated errors\r\n", (unsigned)idx);
++        bowie_i2c_recover();
++        mux_current_channel = 0xFFU;
++    }
++
++    if (device_error_count[idx] >= GLOVE_REINIT_AFTER)
++    {
++        now = HAL_GetTick();
++        if ((device_last_reinit_ms[idx] == 0U) ||
++            ((uint32_t)(now - device_last_reinit_ms[idx]) >= GLOVE_REINIT_COOLDOWN_MS))
++        {
++            device_last_reinit_ms[idx] = now;
++            BOWIE_LOG("link %u: reinitializing BHI360\r\n", (unsigned)idx);
++            glove_devices[idx].init = false;
++            HAL_Delay(2);
++            if (init_island(idx) == 0)
++            {
++                glove_devices[idx].init = true;
++                glove_devices[idx].last_data_ms = HAL_GetTick();
++                BOWIE_LOG("link %u: reinitialization OK\r\n", (unsigned)idx);
++            }
++            else
++            {
++                BOWIE_LOG("link %u: reinitialization FAILED\r\n", (unsigned)idx);
++            }
++            device_error_count[idx] = 0U;
++            mux_current_channel = 0xFFU;
++        }
++    }
+ }
+ 
+-
++void glove_update_data()
++{
++    uint8_t idx;
++    uint8_t channel;
++    int8_t result;
++
++    for (idx = 0U; idx < NUM_DEVICES; idx++)
++    {
++        bowie_watchdog_feed();
++        bowie_usb_poll();
++
++        if (glove_devices[idx].init != true)
++        {
++            uint32_t retry_now;
++            if (glove_devices[idx].present != true)
++            {
++                continue;
++            }
++
++            retry_now = HAL_GetTick();
++            if ((device_last_reinit_ms[idx] != 0U) &&
++                ((uint32_t)(retry_now - device_last_reinit_ms[idx]) < GLOVE_RETRY_AFTER_FAILED_INIT_MS))
++            {
++                continue;
++            }
++
++            device_last_reinit_ms[idx] = retry_now;
++            bowie_i2c_recover();
++            bowie_watchdog_feed();
++            if (init_island(idx) == 0)
++            {
++                glove_devices[idx].init = true;
++                glove_devices[idx].last_data_ms = HAL_GetTick();
++                device_error_count[idx] = 0U;
++            }
++            continue;
++        }
++
++        if (glove_devices[idx].recover_requested)
++        {
++            glove_devices[idx].recover_requested = 0U;
++            glove_devices[idx].present = 1U;
++            device_last_reinit_ms[idx] = HAL_GetTick();
++            bowie_i2c_recover();
++            if (init_island(idx) == 0)
++            {
++                glove_devices[idx].init = true;
++                glove_devices[idx].last_data_ms = HAL_GetTick();
++            }
++            else
++            {
++                glove_devices[idx].init = false;
++            }
++            device_error_count[idx] = 0U;
++            mux_current_channel = 0xFFU;
++            continue;
++        }
++
++        channel = glove_devices[idx].mux_chan;
++        if (glove_mux_set_channel(channel) != HAL_OK)
++        {
++            glove_handle_device_error(idx);
++            continue;
++        }
++
++        result = bhy2_get_and_process_fifo(glove_work_buffer, WORK_BUFFER_SIZE, glove_devices[idx].dev);
++        if (result != BHY2_OK)
++        {
++            glove_handle_device_error(idx);
++        }
++        else
++        {
++            uint32_t now_ms = HAL_GetTick();
++            if (glove_devices[idx].last_data_ms == 0U)
++            {
++                glove_devices[idx].last_data_ms = now_ms;
++                device_error_count[idx] = 0U;
++            }
++            else if ((uint32_t)(now_ms - glove_devices[idx].last_data_ms) > 500U)
++            {
++                glove_handle_device_error(idx);
++            }
++            else
++            {
++                device_error_count[idx] = 0U;
++            }
++        }
++    }
++}
+ 
+ void glove_send_quat_data(uint32_t index, uint32_t s, uint32_t ns, uint8_t finger, uint8_t link, uint8_t sensor_id, int16_t x, int16_t y, int16_t z, int16_t w, uint16_t accuracy)
+ {
+@@ -441,7 +561,7 @@ void glove_send_quat_data(uint32_t index, uint32_t s, uint32_t ns, uint8_t finge
+ //	msg.mag.y = 0;
+ //	msg.mag.z = 0;
+ 
+-//	printf("quat msg %d\r\n", sizeof(msg));
++//	BOWIE_LOG("quat msg %d\r\n", sizeof(msg));
+ 	glove_coms_write(&msg);
+ }
+ // save sensor into protobuf structure message
+@@ -497,7 +617,7 @@ void glove_send_mag_data(uint32_t index, uint32_t s, uint32_t ns, uint8_t finger
+ //	msg.quat.w = 0;
+ //	msg.quat.accuracy = 0;
+ 
+-//	printf("mag msg %d\r\n", sizeof(msg));
++//	BOWIE_LOG("mag msg %d\r\n", sizeof(msg));
+ 	glove_coms_write(&msg);
+ 
+ }
+@@ -522,8 +642,24 @@ Comms_StatusTypedef glove_coms_write(bowie_Data *msg)
+ 	if(res.status != COBS_ENCODE_OK) {
+ 		return COMM_COBS_ERROR;
+ 	}
+-//	printf("pb_ostream %d\r\n", pb_ostream.bytes_written);
+-	tud_cdc_write(&out_buffer, res.out_len);
++//	BOWIE_LOG("pb_ostream %d\r\n", pb_ostream.bytes_written);
++	if (!tud_ready()) {
++		bowie_usb_note_tx_failure();
++		return COMM_ERROR;
++	}
++	if (tud_cdc_write_available() < res.out_len) {
++		bowie_usb_note_tx_failure();
++		return COMM_ERROR;
++	}
++	{
++		uint32_t written = tud_cdc_write(out_buffer, res.out_len);
++		if (written != res.out_len) {
++			bowie_usb_note_tx_failure();
++			return COMM_ERROR;
++		}
++		bowie_usb_note_tx_success();
++		(void)tud_cdc_write_flush();
++	}
+ //	tud_cdc_write_flush();
+ 	HAL_GPIO_TogglePin(GPIOA, BLUE_LED_STOP_Pin);
+ 	return COMM_OK;
+diff --git a/firmware/BowieGlove/Core/Src/main.c b/firmware/BowieGlove/Core/Src/main.c
+index 196c78f..1bd1b51 100644
+--- a/firmware/BowieGlove/Core/Src/main.c
++++ b/firmware/BowieGlove/Core/Src/main.c
+@@ -32,6 +32,9 @@
+ #include "tusb.h"
+ 
+ #include "glove/glove.h"
++#include "glove/debug_log.h"
++#include "glove/watchdog.h"
++#include "glove/usb_service.h"
+ //#include "glove/glove.c"
+ 
+ /* USER CODE END Includes */
+@@ -52,6 +55,44 @@
+ /* USER CODE END PM */
+ 
+ /* Private variables ---------------------------------------------------------*/
++static volatile uint8_t usb_service_pending = 0U;
++static volatile uint8_t usb_recovery_requested = 0U;
++static uint32_t usb_tx_fail_count = 0U;
++
++void bowie_usb_note_tx_success(void)
++{
++  usb_tx_fail_count = 0U;
++}
++
++void bowie_usb_note_tx_failure(void)
++{
++  if (usb_tx_fail_count < 0xFFFFFFFFU)
++  {
++    usb_tx_fail_count++;
++  }
++  if (usb_tx_fail_count >= 20U)
++  {
++    usb_recovery_requested = 1U;
++  }
++}
++
++void bowie_usb_poll(void)
++{
++  if (usb_recovery_requested)
++  {
++    usb_recovery_requested = 0U;
++    usb_tx_fail_count = 0U;
++    (void)tud_disconnect();
++    HAL_Delay(50);
++    (void)tud_connect();
++  }
++  if (usb_service_pending)
++  {
++    usb_service_pending = 0U;
++    tud_task();
++    tud_cdc_write_flush();
++  }
++}
+ 
+ /* USER CODE BEGIN PV */
+ 
+@@ -128,21 +169,22 @@ int main(void)
+ 
+ //   while(1)
+ //   {
+-//	  printf("----------------\r\n");
++//	  BOWIE_LOG("----------------\r\n");
+ //	  scan_mux_channel(0);
+ //	  scan_mux_channel(2);
+ //	  scan_mux_channel(3);
+ //	  scan_mux_channel(5);
+ //	  scan_mux_channel(7);
+-//	  printf("----- init -----\r\n");
++//	  BOWIE_LOG("----- init -----\r\n");
+ //	  init_glove();
+ //	  HAL_Delay(5000);
+-//	  printf("----init done---\r\n");
++//	  BOWIE_LOG("----init done---\r\n");
+ //   }
+ 
+ 
+     HAL_Delay(1000);
+-  	init_glove();
++  bowie_watchdog_init();
++  init_glove();
+ 
+ 
+ //	uint8_t work_buffer[WORK_BUFFER_SIZE];
+@@ -168,8 +210,12 @@ int main(void)
+ //  	result = bhy2_get_phys_sensor_info(phys_sensor_id, &info, glove_devices[0].dev);
+ 
+     while(1){
++		bowie_usb_poll();
+ 
+ 		glove_update_data();
++		bowie_watchdog_feed();
++
++		bowie_usb_poll();
+ 
+     /* USER CODE END WHILE */
+ 
+@@ -281,9 +327,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+   //  HAL_GPIO_TogglePin(GPIOA, RED_LED_STATUS_Pin);
+   if (htim->Instance == TIM8)
+   {
++	usb_service_pending = 1U;
+ 	HAL_GPIO_TogglePin(GPIOA, YELLOW_LED_START_Pin);
+-	tud_task(); //send data over usb
+-	tud_cdc_write_flush();
+   }
+ }
+ /* USER CODE END 4 */
+@@ -315,7 +360,7 @@ void assert_failed(uint8_t *file, uint32_t line)
+ {
+   /* USER CODE BEGIN 6 */
+   /* User can add his own implementation to report the file name and line number,
+-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
++     ex: BOWIE_LOG("Wrong parameters value: file %s on line %d\r\n", file, line) */
+   /* USER CODE END 6 */
+ }
+ #endif /* USE_FULL_ASSERT */
+diff --git a/firmware/BowieGlove/Drivers/bhy2/bhy2.c b/firmware/BowieGlove/Drivers/bhy2/bhy2.c
+index 52622bc..b5934a9 100644
+--- a/firmware/BowieGlove/Drivers/bhy2/bhy2.c
++++ b/firmware/BowieGlove/Drivers/bhy2/bhy2.c
+@@ -142,6 +142,12 @@ static int8_t bhy2_get_and_process_fifo_support(uint8_t *int_status,
+                 return *rslt;
+             }
+ 
++            if (bytes_read == 0U)
++            {
++                *rslt = BHY2_E_IO;
++                return *rslt;
++            }
++
+             fifo_temp->read_length += bytes_read;
+         }
+ 
+@@ -217,6 +223,11 @@ int8_t bhy2_get_and_process_fifo(uint8_t *work_buffer, uint32_t buffer_size, str
+                 return rslt;
+             }
+ 
++            if (bytes_read == 0U)
++            {
++                return BHY2_E_IO;
++            }
++
+             fifos.read_length += bytes_read;
+ //            printf("non wake up fifo %d\r\n", fifos.read_length);
+         }
+@@ -245,6 +256,11 @@ int8_t bhy2_get_and_process_fifo(uint8_t *work_buffer, uint32_t buffer_size, str
+                 return rslt;
+             }
+ 
++            if (bytes_read == 0U)
++            {
++                return BHY2_E_IO;
++            }
++
+             fifos.read_length += bytes_read;
+ //            printf("status length %d\r\n", fifos.read_length);
+         }
+@@ -1561,9 +1577,9 @@ int8_t bhy2_get_variant_id(uint32_t *variant_id, struct bhy2_dev *dev)
+ 
+ static int8_t get_callback_info(uint8_t sensor_id, struct bhy2_fifo_parse_callback_table *info, struct bhy2_dev *dev)
+ {
+-
+     int8_t rslt = BHY2_OK;
+-    uint8_t i = 0, j;
++    uint8_t j;
++    uint8_t found = 0U;
+ 
+     if ((dev != NULL) && (info != NULL))
+     {
+@@ -1572,14 +1588,14 @@ static int8_t get_callback_info(uint8_t sensor_id, struct bhy2_fifo_parse_callba
+             if (sensor_id == dev->table[j].sensor_id)
+             {
+                 *info = dev->table[j];
+-                i = j;
++                found = 1U;
+                 break;
+             }
+         }
+ 
+-        if (i == BHY2_MAX_SIMUL_SENSORS)
++        if (!found)
+         {
+-            rslt = BHy2_E_INSUFFICIENT_MAX_SIMUL_SENSORS;
++            rslt = BHY2_E_INVALID_PARAM;
+         }
+         else
+         {
+@@ -1731,11 +1747,24 @@ static int8_t parse_fifo(enum bhy2_fifo_type source, struct bhy2_fifo_buffer *fi
+                 break;
+             default:
+                 rslt = get_callback_info(tmp_sensor_id, &info, dev);
+-                rslt = check_return_value(rslt);
++                if (rslt != BHY2_OK)
++                {
++                    break;
++                }
++
++                if (dev->event_size[tmp_sensor_id] == 0U)
++                {
++                    rslt = BHY2_E_INVALID_PARAM;
++                    break;
++                }
++
+                 rslt = get_buffer_status(fifo_p, dev->event_size[tmp_sensor_id], &status); /*lint !e838 suppressing
+                                                                                             * previously assigned value
+                                                                                             * not used info */
+-                rslt = check_return_value(rslt);
++                if (rslt != BHY2_OK)
++                {
++                    break;
++                }
+                 if (status != BHY2_BUFFER_STATUS_OK)
+                 {
+                     break;
+@@ -1757,7 +1786,10 @@ static int8_t parse_fifo(enum bhy2_fifo_type source, struct bhy2_fifo_buffer *fi
+         }
+     }
+ 
+-    rslt = parse_fifo_support(fifo_p);
++    if (rslt == BHY2_OK)
++    {
++        rslt = parse_fifo_support(fifo_p);
++    }
+ 
+     return rslt;
+ }
+diff --git a/firmware/BowieGlove/Drivers/bhy2/bhy2_hif.c b/firmware/BowieGlove/Drivers/bhy2/bhy2_hif.c
+index 29817d4..59ee2fa 100644
+--- a/firmware/BowieGlove/Drivers/bhy2/bhy2_hif.c
++++ b/firmware/BowieGlove/Drivers/bhy2/bhy2_hif.c
+@@ -36,6 +36,7 @@
+ *
+ */
+ 
++#include <stdio.h>
+ #include "bhy2_hif.h"
+ 
+ /*! Mask definitions for SPI read/write address */
+diff --git a/firmware/BowieGlove/FIXES_20260925.md b/firmware/BowieGlove/FIXES_20260925.md
+new file mode 100644
+index 0000000..aeb56fb
+--- /dev/null
++++ b/firmware/BowieGlove/FIXES_20260925.md
+@@ -0,0 +1,64 @@
++# BowieGlove 强磁卡死修复 - 2026-09-25
++
++本次只针对 BowieGlove 固件的强磁/磁突变卡死问题。
++
++## 根因
++
++BHI360 在强磁突变、传感器错误或 FIFO 溢出后，可能发出不在回调表内的异常事件。
++下游 `parse_fifo()` 在 `event_size == 0` 时没有推进读取位置，也没有把查找错误向上返回，
++因此会在原地无限循环。主循环停止后 USB 不再送帧，上位机会表现为：
++
++- 窗口仍在响应；
++- 状态 JSON 仍在刷新；
++- `frames` 不再增长；
++- 串口线程仍然活着。
++
++## 修复
++
++1. `parse_fifo()` 查找不到回调时立即返回错误，不再把错误当成功。
++2. `event_size == 0` 时立即退出当前 FIFO 解析，避免零步进死循环。
++3. FIFO 读取返回 0 字节时立即结束本次解析，避免 `remain_length` 原地空转。
++4. BHI360 的 SENSOR_ERROR、FIFO_OVERFLOW、RESET 元事件都会请求该路重初始化。
++5. 重初始化失败不再永久停采；每 2 秒自动重试，并用 I2C 恢复清总线。
++6. USB 写之前检查 TX FIFO 剩余空间；空间不足时丢弃整帧，绝不再写 COBS 半帧。
++7. USB 未就绪或 TX 写入失败也会计入 USB 失败计数，触发既有 disconnect/connect 恢复。
++
++## 构建
++
++构建目录：
++
++`build_magnet_recovery_20260925`
++
++构建结果：0 error。
++
++```
++text 225524
++data 1160
++bss  30888
++```
++
++关键栈占用：
++
++```
++glove_update_data 32 bytes
++parse_fifo        128 bytes
++```
++
++## 烧录文件
++
++- `build_magnet_recovery_20260925/BowieGlove_magnet_recovery.hex`
++- `build_magnet_recovery_20260925/BowieGlove_magnet_recovery.bin`
++
++写入地址：
++
++`0x08000000`
++
++## SHA256
++
++- HEX: `89D6359A8F34E61A574F088E0C79FA7FE12AD9B68B232D6B33F8CB3C1C7841AB`
++- BIN: `3476FCAC78B1C88F6B4AB33D474C0181AB600D00F02D6282B0F167B595F58DB9`
++
++## 当前烧录状态
++
++2026-09-25 02:14 当前电脑没有枚举到 ST-Link（VID_0483），
++也没有枚举到 Bowie CDC（VID_2833/COM3），所以该版本已编译但尚未写入板子。
+diff --git a/firmware/BowieGlove/STM32F446RETX_FLASH.ld b/firmware/BowieGlove/STM32F446RETX_FLASH.ld
+index 88e3368..ff6d458 100644
+--- a/firmware/BowieGlove/STM32F446RETX_FLASH.ld
++++ b/firmware/BowieGlove/STM32F446RETX_FLASH.ld
+@@ -39,7 +39,7 @@ ENTRY(Reset_Handler)
+ _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
+ 
+ _Min_Heap_Size = 0x200; /* required amount of heap */
+-_Min_Stack_Size = 0x400; /* required amount of stack */
++_Min_Stack_Size = 0x1000; /* required amount of stack */
+ 
+ /* Memories definition */
+ MEMORY
+diff --git a/firmware/BowieGlove/STM32F446RETX_RAM.ld b/firmware/BowieGlove/STM32F446RETX_RAM.ld
+index acbad3c..eef3432 100644
+--- a/firmware/BowieGlove/STM32F446RETX_RAM.ld
++++ b/firmware/BowieGlove/STM32F446RETX_RAM.ld
+@@ -39,7 +39,7 @@ ENTRY(Reset_Handler)
+ _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
+ 
+ _Min_Heap_Size = 0x200; /* required amount of heap */
+-_Min_Stack_Size = 0x400; /* required amount of stack */
++_Min_Stack_Size = 0x1000; /* required amount of stack */
+ 
+ /* Memories definition */
+ MEMORY

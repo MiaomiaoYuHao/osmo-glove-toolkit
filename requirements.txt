@@ -1,0 +1,4 @@
+pyserial==3.5
+cobs==1.2.0
+betterproto==2.0.0b5
+numpy>=1.26
