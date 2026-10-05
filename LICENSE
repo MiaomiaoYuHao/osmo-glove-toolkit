@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 lina130
+Copyright (c) 2026 MiaomiaoYuHao
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,7 +21,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 SCOPE NOTE
-This license applies only to original material authored by lina130 in this
+This license applies only to original material authored by MiaomiaoYuHao in this
 repository. It does not apply to files derived from or generated against the
 upstream OSMO project (jessicayin/osmo_tactile_glove), including
 host/utils/bowiepb/ and firmware/patches/. The upstream repository currently

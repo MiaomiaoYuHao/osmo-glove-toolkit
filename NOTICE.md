@@ -1,6 +1,6 @@
 # Notice and attribution
 
-This toolkit contains original host-side code by `lina130`, custom firmware
+This toolkit contains original host-side code by `MiaomiaoYuHao`, custom firmware
 variants derived from the upstream OSMO tactile glove project, and prebuilt
 variants using Bosch firmware material.
 
@@ -17,7 +17,7 @@ include a LICENSE file. A public repository is not automatically an open-source
 license. Therefore:
 
 - The MIT license in this repository applies only to original material
-  authored by `lina130`.
+  authored by `MiaomiaoYuHao`.
 - `host/utils/bowiepb/` is a generated protobuf module derived from the
   upstream OSMO/Bowie protocol. It is included only for interoperability and
   is not relicensed here.

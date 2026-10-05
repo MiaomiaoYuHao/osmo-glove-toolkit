@@ -114,7 +114,7 @@ The force-firmware stability fix was submitted to upstream as
 
 ## License
 
-The MIT license applies only to original material authored by `lina130`.
+The MIT license applies only to original material authored by `MiaomiaoYuHao`.
 Upstream-derived firmware, vendor firmware headers, generated protocol files,
 and patches are explicitly excluded. See [LICENSE](LICENSE) and
 [NOTICE.md](NOTICE.md).

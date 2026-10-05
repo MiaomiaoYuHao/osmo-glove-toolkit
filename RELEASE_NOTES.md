@@ -30,6 +30,6 @@ the physical glove. The code and downloadable release assets are complete.
 
 ## License
 
-MIT applies only to original host-side material authored by lina130.
+MIT applies only to original host-side material authored by MiaomiaoYuHao.
 Upstream-derived and vendor firmware material is excluded. See LICENSE and
 NOTICE.md.
