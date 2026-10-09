@@ -31,11 +31,31 @@ This repository brings the complete work together instead of publishing only the
 | Custom 9-DoF attitude / yaw supervisor | `firmware/attitude/BowieGlove_Attitude` | `firmware/releases/attitude_9dof` | GAMERV + two-magnet yaw handling and magnetic disturbance recovery |
 | Official Bosch NDOF single-magnet yaw | vendor firmware header under `firmware/ndof` | `firmware/releases/attitude_ndof` | Official NDOF yaw reference using BMM350 #1 |
 | Full compatible 6-DoF GAMERV | Based on `firmware/force/BowieGlove` | `firmware/releases/complete_6dof` | Full 20-link glove compatibility build |
+| **Dual-magnet differential (stable)** | `firmware/dualmag_diff/BowieGlove` | `firmware/releases/dualmag_diff_20261009` | Both BMM350 per island streamed (primary on `sid`, secondary on `sid+20`); firmware is a pure data pipe, the differential is computed on the host |
 
 The official NDOF source directory was not present in the local workspace when
 this toolkit was assembled. Its prebuilt images and the vendor firmware header
 are included; the exact NDOF source/configuration is not claimed as recoverable
 until that missing source tree is restored.
+
+## Dual-magnet differential build (2026-10-09)
+
+`firmware/releases/dualmag_diff_20261009` is built from the **known-good fixall base**
+(`backup_before_magnet_recovery_20260925`) rather than the magnet-recovery line, which
+proved unstable on that board (USB drop / re-init loops).
+
+- Both magnetometers of an island are streamed: primary on `sid`, secondary on `sid + 20`
+  via the BHI360 BSX **META** channel (`BHY2_SENSOR_ID_MAG_PASS_META`). No SensorAPI and
+  no Soft Pass-Through are used at runtime.
+- The firmware stays a **pure data pipe**; the differential is computed on the host.
+- Requires a **cold boot** (power cycle) after flashing.
+
+The matching host revision adds timestamp-aligned dual-magnet pairing, Kalman bias drift
+compensation (with force-event arming and falling-edge release) and a numeric grid + 3D
+surface heat map.
+
+See `firmware/dualmag_diff/README.md` for the two build-level fixes that were essential
+(makefile include paths, `objects.list`).
 
 ## Host applications
 
