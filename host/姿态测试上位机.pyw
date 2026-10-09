@@ -203,6 +203,7 @@ class PoseMonitor:
         self.frame_count = 0
         self.sensor_ids: set[int] = set()
         self.mag_by_sensor: dict[int, tuple[float, float, float]] = {}
+        self.mag_ts_by_sensor: dict[int, tuple[int, int]] = {}
         self.mag_history: dict[int, deque[tuple[float, float, float]]] = {}
         self.mag_world_history: dict[int, deque[tuple[float, float, float]]] = {}
         self.mag_common_history: dict[int, deque[tuple[float, float, float]]] = {}
@@ -649,13 +650,30 @@ class PoseMonitor:
         self.status_var.set("校准完成")
         self.canvas.focus_set()
 
+    def mag_secondary(self, sid: int, max_dt_ms: float = 60.0):
+        """Second magnetometer (sid+20) only if its data timestamp is close to the primary's.
+
+        This replaces naive "latest of each" pairing: if the two frames are far apart in time
+        (dropped/stale frame) the pair is rejected instead of producing a bogus difference.
+        """
+        sec = self.mag_secondary(sid)
+        if sec is None:
+            return None
+        ta = self.mag_ts_by_sensor.get(sid)
+        tb = self.mag_ts_by_sensor.get(sid + 20)
+        if ta and tb:
+            dt_ms = abs((ta[0] - tb[0]) * 1000.0 + (ta[1] - tb[1]) / 1e6)
+            if dt_ms > max_dt_ms:
+                return None
+        return sec
+
     def zero_mag_difference(self) -> None:
         sid = sid_override if sid_override is not None else self.current_sensor_id
         if sid is None or sid < 1 or sid > 20:
             candidates = sorted(k for k in self.mag_by_sensor if 1 <= k <= 20)
             sid = candidates[0] if candidates else None
         primary = self.mag_by_sensor.get(sid) if sid is not None else None
-        secondary = self.mag_by_sensor.get(sid + 20) if sid is not None else None
+        secondary = self.mag_secondary(sid) if sid is not None else None
         if primary is None or secondary is None:
             self.status_var.set("没有双磁数据，无法归零磁差分")
             return
@@ -1311,6 +1329,11 @@ class PoseMonitor:
             self._record_analysis(row, accepted=False, drop_reason="non_finite")
             return
         self.mag_by_sensor[sid] = vec
+        try:
+            self.mag_ts_by_sensor[sid] = (int(row.get('mag_seconds') or 0),
+                                          int(row.get('mag_nanoseconds') or 0))
+        except Exception:
+            pass
         self._update_yaw_diag(sid)
         history = self.mag_history.setdefault(sid, deque(maxlen=80))
         history.append(vec)
@@ -1338,7 +1361,7 @@ class PoseMonitor:
         # is transmitted as primary_id + 20. Fuse common mode and monitor the
         # dynamic part of the difference.
         if 1 <= sid <= 20:
-            secondary = self.mag_by_sensor.get(sid + 20)
+            secondary = self.mag_secondary(sid)
             if secondary is not None:
                 common = tuple((vec[i] + secondary[i]) * 0.5 for i in range(3))
                 diff = tuple(vec[i] - secondary[i] for i in range(3))
@@ -1704,7 +1727,7 @@ class PoseMonitor:
         if primary is None:
             return "无磁数据 / 指南针不可用", "#8c98a8", None, None, None, None, None
 
-        secondary = self.mag_by_sensor.get(sid + 20) if sid is not None else None
+        secondary = self.mag_secondary(sid) if sid is not None else None
         if secondary is not None:
             common = primary
             diff = tuple(primary[i] - secondary[i] for i in range(3))

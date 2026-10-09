@@ -20,6 +20,12 @@ import numpy as np
 import threading
 import time
 import tkinter as tk
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    _MPL_OK = True
+except Exception:
+    _MPL_OK = False
 from collections import deque
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -315,6 +321,8 @@ class ForceMonitor:
         self.stop_event = threading.Event()
         self.reader: ForceSerialReader | None = None
         self.mag_samples: dict[int, tuple[float, Vec3, dict[str, Any]]] = {}
+        self.mag_dev_t: dict[int, float | None] = {}
+        self.mag_hist: dict[int, deque[tuple[float, Vec3]]] = {}
         self.pair_left: int | None = None
         self.pair_right: int | None = None
         self.baseline_left: Vec3 | None = None
@@ -364,8 +372,32 @@ class ForceMonitor:
         self.smoothing_var = tk.DoubleVar(value=0.75)
         self.gain_var = tk.DoubleVar(value=1.0)
         self.range_var = tk.DoubleVar(value=50.0)
+        self.arrow_range_var = tk.DoubleVar(value=50.0)   # fixed arrow full-scale (does NOT auto-range)
         self.auto_range_var = tk.BooleanVar(value=True)
-        self.topmost_var = tk.BooleanVar(value=True)
+        self.auto_zero_var = tk.BooleanVar(value=True)      # idle auto-zero (baseline tracking)
+        self.auto_zero_level_var = tk.DoubleVar(value=5.0)  # 0=最保守 .. 10=最激进
+        self.release_zero_var = tk.BooleanVar(value=True)    # 松手(卸载)沿自动归零
+        self.kf_bias_var = tk.BooleanVar(value=True)         # ④ 卡尔曼 bias 漂移补偿
+        self._kf_bias: Vec3 = (0.0, 0.0, 0.0)
+        self._kf_p_rel = 1.0e-3      # P/R (normalised uncertainty; scale free)
+        self._kf_q_rel = 0.006       # Q/R per sample (drift allowance)
+        self.kf_arm_var = tk.DoubleVar(value=8.0)  # 力事件武装门限 (%FS per second)
+        self._kf_armed = False
+        self._kf_peak = 0.0
+        self._kf_prev_fn = 0.0
+        self._kf_prev_t = 0.0
+        self._kf_release_since = 0.0
+        self._kf_was_still = False
+        self._kf_fall_edge_t = 0.0
+        self.delta_raw: Vec3 = (0.0, 0.0, 0.0)
+        self._rel_armed = False
+        self._rel_since = 0.0
+        self.auto_zero_gain_var = tk.DoubleVar(value=1.0)  # per-sample adaptation when still
+        self._az_hist: deque[tuple[float, Vec3]] = deque(maxlen=240)
+        self._az_last_action = 0.0
+        self._az_latched = False        # latched after a force event; blocks auto-zero
+        self._az_release_since = 0.0
+        self.topmost_var = tk.BooleanVar(value=False)
         self._auto_range_value = 50.0
         self._auto_range_updated = 0.0
         self._force_changed = True
@@ -409,6 +441,7 @@ class ForceMonitor:
         ttk.Button(top, text="刷新", command=self.refresh_ports).pack(side=tk.LEFT, padx=2)
         self.connect_button = ttk.Button(top, text="连接", command=self.toggle_connection); self.connect_button.pack(side=tk.LEFT, padx=(8, 3))
         ttk.Button(top, text="双磁零点(Z)", command=self.start_zero).pack(side=tk.LEFT, padx=(16, 3))
+        ttk.Checkbutton(top, text="漂移KF", variable=self.kf_bias_var).pack(side=tk.LEFT, padx=(3, 3))
         self.iron_button = ttk.Button(top, text="软硬铁标定(I)", command=self.toggle_iron_calibration)
         self.iron_button.pack(side=tk.LEFT, padx=3)
         ttk.Button(top, text="六方向标定", command=self.open_direction_calibration).pack(side=tk.LEFT, padx=3)
@@ -429,6 +462,8 @@ class ForceMonitor:
         ttk.Label(controls, text="显示量程:").pack(side=tk.LEFT, padx=(8, 0)); ttk.Entry(controls, textvariable=self.range_var, width=8).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(controls, text="自动", variable=self.auto_range_var).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(controls, text="量程复位(R)", command=self.reset_auto_range).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Label(controls, text="箭头满量程:").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Entry(controls, textvariable=self.arrow_range_var, width=8).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(controls, text="置顶", variable=self.topmost_var, command=self._apply_topmost).pack(side=tk.LEFT, padx=(5, 0))
         values = ttk.Frame(self.root, padding=(10, 0, 10, 5))
         values.pack(fill=tk.X)
@@ -456,6 +491,22 @@ class ForceMonitor:
         self.canvas = tk.Canvas(middle, background="#101318", highlightthickness=0)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _event: setattr(self, "_force_changed", True))
+        # --- 3D surface panel, side by side with the numeric grid ---
+        self._mpl_fig = None
+        self._mpl_ax = None
+        self._mpl_canvas = None
+        self._mpl_last = 0.0
+        if _MPL_OK:
+            try:
+                self._mpl_fig = Figure(figsize=(4.6, 4.6), dpi=100, facecolor="#101318")
+                self._mpl_ax = self._mpl_fig.add_axes((0.0, 0.0, 1.0, 1.0), projection="3d")
+                self._mpl_ax.set_facecolor("#101318")
+                self._mpl_canvas = FigureCanvasTkAgg(self._mpl_fig, master=middle)
+                _w = self._mpl_canvas.get_tk_widget()
+                _w.configure(background="#101318", highlightthickness=0)
+                _w.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+            except Exception:
+                self._mpl_fig = self._mpl_ax = self._mpl_canvas = None
         side = ttk.Frame(middle, padding=(9, 3), width=355)
         side.pack(side=tk.RIGHT, fill=tk.Y)
         side.pack_propagate(False)
@@ -929,6 +980,7 @@ class ForceMonitor:
 
     def _reset_force_state(self, reason: str) -> None:
         self.baseline_left = self.baseline_right = None
+        self.reset_bias_kf()
         self.force_raw = self.force_filtered = self.delta_vector = (0.0, 0.0, 0.0)
         self.series.clear()
         self._force_changed = True
@@ -944,6 +996,247 @@ class ForceMonitor:
             left, right = (int(part) for part in pairs[0].split("+"))
             self.pair_left, self.pair_right = left, right
             self.status_var.set(f"自动配对：sensor {left} + {right}")
+
+    def _update_bias_kf(self, now: float) -> None:
+        """④ Kalman filter with an explicit bias state.
+
+        The zero drift is modelled as a slow random walk on the differential signal
+        (process noise Q); the measurement is the raw differential with noise R.
+        The filter is NORMALISED (state = P/R) so no unit calibration is needed.
+
+        Crucially the measurement update runs ONLY while the sensor is unloaded --
+        otherwise the bias would chase a real applied force. While loaded we only
+        predict (uncertainty P grows), so the next valid idle period corrects faster.
+        """
+        if not self.kf_bias_var.get():
+            return
+        if self.zero_started or self.direction_calibrating or self.iron_calibrating:
+            return
+        if self.baseline_left is None or self.baseline_right is None:
+            return
+        try:
+            _ar = max(0.001, float(self.arrow_range_var.get()))
+        except Exception:
+            _ar = 1.0
+
+        # --- measurement noise (jitter) and recent stability, from the auto-zero history ---
+        hist = list(self._az_hist)
+        if len(hist) < 8:
+            return
+        diffs = []
+        for i in range(1, len(hist)):
+            a0, b0 = hist[i][1], hist[i - 1][1]
+            diffs.append(abs(a0[0] - b0[0]) + abs(a0[1] - b0[1]) + abs(a0[2] - b0[2]))
+        noise = (sum(diffs) / len(diffs)) if diffs else 0.0
+        rec = hist[-20:]
+        span = 0.0
+        for k in range(3):
+            vals = [pt[1][k] for pt in rec]
+            span = max(span, max(vals) - min(vals))
+
+        # ---- force-event arming: a real press has a fast onset, drift does not ----
+        _fn = vnorm(self.force_filtered)
+        _dt = now - self._kf_prev_t
+        _rate = (abs(_fn - self._kf_prev_fn) / _dt) if _dt > 1e-6 else 0.0
+        self._kf_prev_fn = _fn
+        self._kf_prev_t = now
+        try:
+            _arm_thr = max(0.1, float(self.kf_arm_var.get())) * 0.01 * _ar   # %FS per second
+        except Exception:
+            _arm_thr = 0.08 * _ar
+        if (_rate > _arm_thr) and (_fn > 0.05 * _ar):
+            self._kf_armed = True
+            self._kf_release_since = 0.0
+            if _fn > self._kf_peak:
+                self._kf_peak = _fn
+        # falling (release) EDGE: fast drop from the peak -> mark it as a release event
+        _drop_rate = (self._kf_prev_fn - _fn) / _dt if _dt > 1e-6 else 0.0
+        if (_drop_rate > _arm_thr) and (self._kf_peak > 0.0) and (_fn < 0.90 * self._kf_peak):
+            self._kf_fall_edge_t = now
+        if self._kf_armed:
+            if _fn > self._kf_peak:
+                self._kf_peak = _fn
+            # only release once clearly unloaded (well below the peak we saw)
+            # NOTE: purely RELATIVE release test. An absolute "|F| < x%FS" gate would
+            # dead-lock again as soon as the uncorrected drift sits above it.
+            _edge_recent = (self._kf_fall_edge_t > 0.0) and ((now - self._kf_fall_edge_t) < 1.5)
+            _released = (_fn < 0.10 * self._kf_peak) or (_edge_recent and _fn < 0.30 * self._kf_peak)
+            if _released:
+                if self._kf_release_since == 0.0:
+                    self._kf_release_since = now
+                # falling edge already proves the unload -> settle much faster
+                _settle = 0.20 if _edge_recent else 0.80
+                if (now - self._kf_release_since) >= _settle:
+                    self._kf_bias = self.delta_raw   # certain: unloaded -> re-zero
+                    self._kf_p_rel = 1.0e-3
+                    self._kf_armed = False
+                    self._kf_peak = 0.0
+                    self._kf_release_since = 0.0
+                    self._kf_fall_edge_t = 0.0
+            else:
+                self._kf_release_since = 0.0
+            if self._kf_armed:
+                # ARMED = a real force is present/held -> never let the filter chase it
+                self._kf_p_rel = min(self._kf_p_rel + self._kf_q_rel, 50.0)
+                return
+
+        # Drift is slow, force events are fast -> discriminate on STABILITY too.
+        moving = (span > max(6.0 * noise, 1e-9))
+        if (not moving) and (not self._kf_was_still):
+            # Stillness ONSET: boost uncertainty for a quick catch-up, then it decays
+            # back to the steady-state gain. Only reached when NOT armed, so a held
+            # force (which arms the filter) is never affected by this boost.
+            self._kf_p_rel = max(self._kf_p_rel, 3.0)
+        self._kf_was_still = (not moving)
+        if moving:
+            # no measurement update; uncertainty grows (bounded)
+            self._kf_p_rel = min(self._kf_p_rel + self._kf_q_rel, 50.0)
+            return
+
+        # --- Kalman measurement update of the bias (idle only) ---
+        K = self._kf_p_rel / (self._kf_p_rel + 1.0)
+        if (now - getattr(self, "_kf_last_ui", 0.0)) > 0.5:
+            self._kf_last_ui = now
+            self.zero_var.set(f"零点：KF bias={vnorm(self._kf_bias):.1f} "
+                              f"{'武装' if self._kf_armed else '跟踪'} K={K:.2f}")
+        d = self.delta_raw
+        self._kf_bias = (self._kf_bias[0] + K * (d[0] - self._kf_bias[0]),
+                         self._kf_bias[1] + K * (d[1] - self._kf_bias[1]),
+                         self._kf_bias[2] + K * (d[2] - self._kf_bias[2]))
+        self._kf_p_rel = (1.0 - K) * self._kf_p_rel + self._kf_q_rel
+
+    def reset_bias_kf(self) -> None:
+        self._kf_bias = (0.0, 0.0, 0.0)
+        self._kf_p_rel = 1.0e-3
+        self._kf_armed = False
+        self._kf_peak = 0.0
+        self._kf_release_since = 0.0
+
+    def _update_release_zero(self, now: float) -> None:
+        """Semi-automatic zeroing on unload (like digital scales).
+
+        A real press is followed by a release EDGE (fast drop in |F|). We only re-zero
+        after such an edge, then require the output to settle near zero. A held constant
+        force has no release edge, so it can never be zeroed away -- independent of any
+        stillness/rate tuning.
+        """
+        if not self.release_zero_var.get():
+            return
+        if self.baseline_left is None or self.baseline_right is None:
+            return
+        if self.zero_started or self.direction_calibrating or self.iron_calibrating:
+            self._rel_armed = False
+            self._rel_since = 0.0
+            return
+        try:
+            _ar = max(0.001, float(self.arrow_range_var.get()))
+        except Exception:
+            _ar = 1.0
+        _fn = vnorm(self.force_filtered)
+        _press = 0.20 * _ar     # must have been genuinely loaded
+        _release = 0.06 * _ar   # and come back down near zero
+        if _fn > _press:
+            self._rel_armed = True
+            self._rel_since = 0.0
+            return
+        if not self._rel_armed:
+            return
+        if _fn < _release:
+            if self._rel_since == 0.0:
+                self._rel_since = now
+            elif (now - self._rel_since) >= 0.25:
+                self.baseline_left = self.raw_left
+                self.baseline_right = self.raw_right
+                self.reset_bias_kf()
+                self._rel_armed = False
+                self._rel_since = 0.0
+                self.zero_var.set("零点：松手自动归零")
+                self.status_var.set("检测到卸载，已自动归零")
+        else:
+            self._rel_since = 0.0
+
+    def _update_auto_zero(self, now: float) -> None:
+        """History feeder for the Kalman bias filter (no auto-zero adaptation remains).
+
+        Collects (time, delta) samples used to derive the measurement-noise floor and
+        the short-term stability that gates the Kalman measurement update.
+        """
+        if self.zero_started or self.baseline_left is None or self.baseline_right is None:
+            return
+        if self.direction_calibrating or self.iron_calibrating:
+            return
+        d = self.delta_vector
+        if d is None:
+            return
+        self._az_hist.append((now, d))
+        # NOTE: only the jitter history is kept now -- the Kalman bias filter (漂移KF)
+        # consumes it as its measurement-noise / stability estimate. All other
+        # auto-zero mechanisms were removed by design.
+        return
+        n = len(self._az_hist)
+        if n < 4 or (now - self._az_hist[0][0]) < 0.10:
+            return
+        hist = list(self._az_hist)
+        rec = hist[-30:]
+        # noise floor = median of successive |d| changes (robust, unit independent)
+        diffs = []
+        for i in range(1, n):
+            a0, b0 = hist[i][1], hist[i - 1][1]
+            diffs.append(abs(a0[0] - b0[0]) + abs(a0[1] - b0[1]) + abs(a0[2] - b0[2]))
+        diffs.sort()
+        noise = diffs[len(diffs) // 2] if diffs else 0.0
+        span = 0.0
+        for k in range(3):
+            vals = [pt[1][k] for pt in rec]
+            span = max(span, max(vals) - min(vals))
+        if span > max(1e-9, 20.0 * noise):     # not still -> freeze
+            self._az_last_action = now
+            return
+        if now - self._az_last_action < 0.0:  # require sustained stillness
+            return
+        # aggressiveness slider 0..10 -> gain (log) and force gate (linear)
+        try:
+            _lvl = max(0.0, min(10.0, float(self.auto_zero_level_var.get())))
+        except Exception:
+            _lvl = 5.0
+        g = 0.005 * (200.0 ** (_lvl / 10.0))   # 0.005 (slow) .. 1.0 (instant)
+        try:
+            self.auto_zero_level_lbl.configure(text=f"{_lvl:.1f}")
+        except Exception:
+            pass
+        if g <= 0.0:
+            return
+        # ---- hysteresis latch: a constant held force must never be mistaken for drift ----
+        # Real force and zero-drift are mathematically indistinguishable from one signal,
+        # so we use history: once the output leaves the near-zero band we LATCH and refuse
+        # to track until the force has clearly been released and stayed released.
+        try:
+            _ar = max(0.001, float(self.arrow_range_var.get()))
+        except Exception:
+            _ar = 1.0
+        _fn = vnorm(self.force_filtered)
+        _gate = 0.20 * (1.0 - _lvl / 10.0)   # 0.20 .. 0.0 (0 = gate off)
+        _hi = 1e9 if _gate <= 0.0001 else _gate * _ar
+        _lo = 0.45 * _hi if _hi < 1e8 else 0.0
+        if _fn > _hi:
+            self._az_latched = True
+            self._az_release_since = 0.0
+            self._az_last_action = now
+            return
+        if self._az_latched:
+            if _fn < _lo:
+                if self._az_release_since == 0.0:
+                    self._az_release_since = now
+                elif (now - self._az_release_since) >= 0.5:
+                    self._az_latched = False
+                    self._az_release_since = 0.0
+            else:
+                self._az_release_since = 0.0
+            if self._az_latched:
+                self._az_last_action = now
+                return
+        self.baseline_left = tuple(self.baseline_left[k] * (1.0 - g) + self.raw_left[k] * g for k in range(3))
+        self.baseline_right = tuple(self.baseline_right[k] * (1.0 - g) + self.raw_right[k] * g for k in range(3))
 
     def start_zero(self) -> None:
         pair = (self.pair_left, self.pair_right)
@@ -980,6 +1273,42 @@ class ForceMonitor:
             self.zero_samples_left = []
             self.zero_samples_right = []
 
+    def _mag_interp(self, sid: int, t_target: float | None, max_gap_s: float = 0.06) -> Vec3 | None:
+        """Interpolate sensor `sid` onto timestamp `t_target` (device time of the other sensor).
+
+        Returns None when the pair cannot be formed within `max_gap_s`, so the caller can HOLD
+        the previous output instead of subtracting a stale sample (old behaviour).
+        """
+        if t_target is None:
+            return None
+        h = self.mag_hist.get(sid)
+        if not h:
+            return None
+        prev = None
+        nxt = None
+        for item in h:
+            if item[0] <= t_target:
+                prev = item
+            if item[0] >= t_target:
+                nxt = item
+                break
+        if prev is None and nxt is None:
+            return None
+        if prev is None:
+            return nxt[1] if (nxt[0] - t_target) <= max_gap_s else None
+        if nxt is None:
+            return prev[1] if (t_target - prev[0]) <= max_gap_s else None
+        t0, v0 = prev
+        t1, v1 = nxt
+        if (t_target - t0) > max_gap_s or (t1 - t_target) > max_gap_s:
+            return None
+        if t1 <= t0:
+            return v0
+        a = (t_target - t0) / (t1 - t0)
+        return (v0[0] + (v1[0] - v0[0]) * a,
+                v0[1] + (v1[1] - v0[1]) * a,
+                v0[2] + (v1[2] - v0[2]) * a)
+
     def _handle_mag(self, row: dict[str, Any]) -> None:
         if self.demo_running and not row.get("_demo"):
             self.stop_demo()
@@ -1009,6 +1338,17 @@ class ForceMonitor:
 
         vector = self._apply_iron_calibration(sid, raw_vector)
         self.mag_samples[sid] = (now, vector, row)
+        dev_t: float | None = None
+        try:
+            _s = row.get('mag_seconds')
+            _ns = row.get('mag_nanoseconds')
+            if _s is not None or _ns is not None:
+                dev_t = float(_s or 0) + float(_ns or 0) / 1e9
+        except Exception:
+            dev_t = None
+        self.mag_dev_t[sid] = dev_t
+        if dev_t is not None:
+            self.mag_hist.setdefault(sid, deque(maxlen=64)).append((dev_t, vector))
         self.frame_count += 1
         self._last_frame_time = now
         self.rate_times.append(now)
@@ -1023,22 +1363,38 @@ class ForceMonitor:
             return
         if self.baseline_left is None and self.zero_started == 0.0 and not row.get("_demo"):
             self.start_zero()
+        _aligned_ok = True
         if sid == self.pair_left:
             self.raw_left = vector
             if self.zero_started:
                 self.zero_samples_left.append(vector)
+            _other = self._mag_interp(self.pair_right, self.mag_dev_t.get(sid))
+            if _other is not None:
+                self.raw_right = _other
+            elif self.mag_dev_t.get(self.pair_right) is not None:
+                _aligned_ok = False
         elif sid == self.pair_right:
             self.raw_right = vector
             if self.zero_started:
                 self.zero_samples_right.append(vector)
+            _other = self._mag_interp(self.pair_left, self.mag_dev_t.get(sid))
+            if _other is not None:
+                self.raw_left = _other
+            elif self.mag_dev_t.get(self.pair_left) is not None:
+                _aligned_ok = False
         else:
             return
+        if not _aligned_ok:
+            return   # hold previous delta instead of mixing temporally-mismatched samples
         self._update_zero(now)
         if self.baseline_left is None or self.baseline_right is None:
             return
         left_delta = vsub(self.raw_left, self.baseline_left)
         right_delta = vsub(self.raw_right, self.baseline_right)
-        self.delta_vector = vsub(left_delta, right_delta)
+        self.delta_raw = vsub(left_delta, right_delta)
+        self.delta_vector = vsub(self.delta_raw, self._kf_bias)
+        self._update_auto_zero(now)
+        self._update_bias_kf(now)
 
         if self.direction_calibrating:
             if self.direction_collecting and not row.get("_demo"):
@@ -1351,7 +1707,7 @@ class ForceMonitor:
                 "window_title": self.root.title(),
                 "force_canvas": force_canvas,
                 "series_canvas": series_canvas,
-                "force_items": len(self.canvas.find_all()),
+                "force_items": (len(self.canvas.find_all()) if hasattr(self.canvas, "find_all") else 0),
                 "series_items": len(self.series_canvas.find_all()),
                 "pair": [self.pair_left, self.pair_right],
                 "baseline_ready": self.baseline_left is not None and self.baseline_right is not None,
@@ -1370,74 +1726,148 @@ class ForceMonitor:
         except Exception:
             pass
 
+
+
+    @staticmethod
+    def _jet_rgb(v: float):
+        """MATLAB 'jet' approximation: v in 0..1 -> (r, g, b) in 0..1."""
+        v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+        r = min(1.0, max(0.0, 1.5 - abs(4.0 * v - 3.0)))
+        g = min(1.0, max(0.0, 1.5 - abs(4.0 * v - 2.0)))
+        b = min(1.0, max(0.0, 1.5 - abs(4.0 * v - 1.0)))
+        return r, g, b
+
+
     def _draw_force(self, width: int, height: int) -> None:
-        value_range = self._display_range()
-        axis = value_range * 1.15
-        origin = self._project((0.0, 0.0, 0.0), width, height, value_range)
+        """Numeric grid heat map of the single taxel.
 
-        def grid_line(a, b, color):
-            pa = self._project(a, width, height, value_range)
-            pb = self._project(b, width, height, value_range)
-            self.canvas.create_line(pa[0], pa[1], pb[0], pb[1], fill=color, width=1)
+        Every cell shows its force value as a small number; the cell background is
+        coloured with a MATLAB 'jet' scale. The field is synthesised from the ONE
+        measured taxel (elliptical Gaussian, peak offset toward the force direction),
+        so it is a rendering of a single vector -- not a measured 2D distribution.
+        """
+        try:
+            _ar = max(0.001, float(self.arrow_range_var.get()))
+        except Exception:
+            _ar = 1.0
+        f = self.force_filtered
+        fn = vnorm(f)
+        amp = min(1.0, fn / _ar)
+        mag_xy = math.hypot(f[0], f[1])
+        th = math.atan2(f[1], f[0]) if mag_xy > 1e-9 else 0.0
+        ct, st = math.cos(th), math.sin(th)
+        ux = (f[0] / mag_xy) if mag_xy > 1e-9 else 0.0
+        uy = (f[1] / mag_xy) if mag_xy > 1e-9 else 0.0
+        _off = 0.45 * (0.35 + 0.65 * amp)
+        cx, cy = _off * ux, _off * uy
 
-        # XY, XZ, YZ planes.
-        for index in range(-5, 6):
-            p = index / 5.0 * axis
-            grid_line((p, -axis, 0.0), (p, axis, 0.0), "#233b4e")
-            grid_line((-axis, p, 0.0), (axis, p, 0.0), "#233b4e")
-            grid_line((p, 0.0, -axis), (p, 0.0, axis), "#24463f")
-            grid_line((-axis, 0.0, p), (axis, 0.0, p), "#24463f")
-            grid_line((0.0, p, -axis), (0.0, p, axis), "#303653")
-            grid_line((0.0, -axis, p), (0.0, axis, p), "#303653")
+        N = 15                                 # grid resolution (N x N numbers)
+        pad = 34
+        size = max(60.0, min(width, height) - pad)
+        cell = size / N
+        x0 = (width - size) * 0.5
+        y0 = (height - size) * 0.5
 
-        axis_defs = (
-            ((-axis, 0.0, 0.0), (axis, 0.0, 0.0), "#ff5c67", "+X"),
-            ((0.0, -axis, 0.0), (0.0, axis, 0.0), "#42e68b", "+Y"),
-            ((0.0, 0.0, -axis), (0.0, 0.0, axis), "#6ea8ff", "+Z"),
-        )
-        for start_point, end_point, color, label in axis_defs:
-            a = self._project(start_point, width, height, value_range)
-            b = self._project(end_point, width, height, value_range)
-            self.canvas.create_line(a[0], a[1], b[0], b[1], fill=color, width=2)
-            self.canvas.create_text(b[0] + 8, b[1] - 8, text=label, fill=color, font=("Arial", 11, "bold"))
+        # header
+        _deg = math.degrees(th)
+        _dir = ("→ +X" if abs(_deg) < 22.5 else "→ +Y" if abs(_deg - 90.0) < 22.5 else
+                "→ -X" if abs(abs(_deg) - 180.0) < 22.5 else
+                "→ -Y" if abs(_deg + 90.0) < 22.5 else f"θ={_deg:+.0f}°")
+        self.canvas.create_text(width * 0.5, y0 - 16,
+                                text=f"|F|={fn:.3f}   FS={_ar:.2f}   {_dir}   单点合成（非阵列测量）",
+                                fill="#dcecf8", font=("Arial", 11, "bold"))
 
-        # Plane labels.
-        for point, text, color in (
-            ((axis, -axis, 0.0), "XY", "#ffd166"),
-            ((axis, 0.0, -axis), "XZ", "#42e68b"),
-            ((0.0, axis, -axis), "YZ", "#6ea8ff"),
-        ):
-            q = self._project(point, width, height, value_range)
-            self.canvas.create_text(q[0], q[1], text=text, fill=color, font=("Consolas", 10, "bold"))
+        for i in range(N):
+            Y = -1.0 + 2.0 * (i + 0.5) / N
+            for j in range(N):
+                X = -1.0 + 2.0 * (j + 0.5) / N
+                U = ct * (X - cx) + st * (Y - cy)
+                V = -st * (X - cx) + ct * (Y - cy)
+                blob = math.exp(-0.5 * ((U / 0.52) ** 2 + (V / 0.24) ** 2))
+                blob *= math.exp(-0.45 * ((max(-U, 0.0)) / 0.52) ** 2)
+                val = fn * blob
+                frac = val / _ar
+                r, g, b = self._jet_rgb(frac)
+                col = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+                lum = 0.299 * r + 0.587 * g + 0.114 * b
+                fg = "#101318" if lum > 0.55 else "#eaf4ff"
+                x1 = x0 + j * cell
+                y1 = y0 + i * cell
+                self.canvas.create_rectangle(x1, y1, x1 + cell, y1 + cell,
+                                             fill=col, outline="#0b1118")
+                self.canvas.create_text(x1 + cell * 0.5, y1 + cell * 0.5,
+                                        text=(f"{val:.2f}" if frac > 0.005 else "0"),
+                                        fill=fg, font=("Consolas", max(6, int(cell * 0.22)), "bold"))
 
-        self.canvas.create_oval(origin[0] - 5, origin[1] - 5, origin[0] + 5, origin[1] + 5, outline="#9ec6df", width=2)
-        force = self.force_filtered
-        force_norm = vnorm(force)
-        shown = vmul(force, value_range / force_norm) if force_norm > value_range else force
-        tip = self._project(shown, width, height, value_range)
-        color = "#ff4757" if force_norm > value_range else "#ffd166" if force_norm > value_range * 0.65 else "#35d6ff"
+        # frame
+        self.canvas.create_rectangle(x0, y0, x0 + size, y0 + size, outline="#3d5a70", width=1)
+        self.canvas.create_text(x0, y0 + size + 14, anchor="w",
+                                text=f"0", fill="#6b7d8c", font=("Consolas", 9))
+        self.canvas.create_text(x0 + size, y0 + size + 14, anchor="e",
+                                text=f"{_ar:.2f}", fill="#6b7d8c", font=("Consolas", 9))
+        if getattr(self, "_demo", False):
+            self.canvas.create_text(width * 0.5, y0 + size + 30, text="演示模式 · 非真实传感器",
+                                    fill="#ffb84d", font=("Arial", 12, "bold"))
 
-        projections = (
-            ((shown[0], shown[1], 0.0), "#ffd166", "XY"),
-            ((shown[0], 0.0, shown[2]), "#42e68b", "XZ"),
-            ((0.0, shown[1], shown[2]), "#6ea8ff", "YZ"),
-        )
-        for point, proj_color, label in projections:
-            projected = self._project(point, width, height, value_range)
-            self.canvas.create_line(tip[0], tip[1], projected[0], projected[1], fill=proj_color, dash=(3, 3), width=1)
-            self.canvas.create_line(origin[0], origin[1], projected[0], projected[1], fill=proj_color, dash=(2, 4), width=1)
-            self.canvas.create_oval(projected[0] - 4, projected[1] - 4, projected[0] + 4, projected[1] + 4, outline=proj_color, width=2)
-            self.canvas.create_text(projected[0] + 7, projected[1] + 7, text=label, fill=proj_color, anchor="nw", font=("Consolas", 9, "bold"))
+    def _draw_surface(self) -> None:
+        """3D surface view of the same synthesised field (side panel)."""
+        if self._mpl_ax is None:
+            return
+        now = time.monotonic()
+        if (now - self._mpl_last) < 0.08:          # ~12 fps cap for plot_surface
+            return
+        self._mpl_last = now
+        try:
+            _ar = max(0.001, float(self.arrow_range_var.get()))
+        except Exception:
+            _ar = 1.0
+        f = self.force_filtered
+        fn = vnorm(f)
+        amp = min(1.0, fn / _ar)
+        mag_xy = math.hypot(f[0], f[1])
+        th = math.atan2(f[1], f[0]) if mag_xy > 1e-9 else 0.0
+        ct, st = math.cos(th), math.sin(th)
+        ux = (f[0] / mag_xy) if mag_xy > 1e-9 else 0.0
+        uy = (f[1] / mag_xy) if mag_xy > 1e-9 else 0.0
+        _off = 0.45 * (0.35 + 0.65 * amp)
+        cx, cy = _off * ux, _off * uy
 
-        self.canvas.create_line(origin[0], origin[1], tip[0], tip[1], fill=color, width=5, arrow=tk.LAST, arrowshape=(15, 19, 7))
-        self.canvas.create_oval(tip[0] - 6, tip[1] - 6, tip[0] + 6, tip[1] + 6, fill=color, outline="#ffffff", width=1)
-        self.canvas.create_text(tip[0] + 10, tip[1] - 10, text=f"|F|={force_norm:.3f}", fill="#dcecf8", anchor="sw", font=("Arial", 11, "bold"))
-        if self.demo_running:
-            self.canvas.create_text(width * 0.5, 55, text="演示模式 · 非真实传感器", fill="#ffb84d", font=("Arial", 16, "bold"))
-        elif self.baseline_left is None:
-            self.canvas.create_text(width * 0.5, height - 30, text="等待真实双磁数据和自动零点……", fill="#aab2c0", font=("Arial", 12))
-        elif force_norm <= 1e-9:
-            self.canvas.create_text(width * 0.5, height - 30, text="力≈0，请按压磁皮", fill="#aab2c0", font=("Arial", 12))
+        n = 31
+        lin = np.linspace(-1.0, 1.0, n)
+        X, Y = np.meshgrid(lin, lin)
+        U = ct * (X - cx) + st * (Y - cy)
+        V = -st * (X - cx) + ct * (Y - cy)
+        blob = np.exp(-0.5 * ((U / 0.52) ** 2 + (V / 0.24) ** 2))
+        blob = blob * np.exp(-0.45 * (np.clip(-U, 0.0, None) / 0.52) ** 2)
+        Z = fn * blob
+        ax = self._mpl_ax
+        try:
+            ax.clear()
+            ax.plot_surface(X, Y, Z, cmap="jet", vmin=0.0, vmax=max(_ar, 1e-6),
+                            rstride=1, cstride=1, linewidth=0.2,
+                            edgecolor=(0.0, 0.0, 0.0, 0.30), antialiased=True, shade=True)
+            ax.set_zlim(0.0, max(_ar, 1e-6))
+            ax.set_xlim(-1.0, 1.0)
+            ax.set_ylim(-1.0, 1.0)
+            ax.set_xlabel("x", color="#9fb9cc", fontsize=8, labelpad=-4)
+            ax.set_ylabel("y", color="#9fb9cc", fontsize=8, labelpad=-4)
+            ax.set_zlabel("|F|", color="#9fb9cc", fontsize=8, labelpad=-6)
+            ax.tick_params(colors="#6b7d8c", labelsize=7)
+            for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+                try:
+                    pane.pane.set_facecolor((0.06, 0.08, 0.10, 1.0))
+                    pane.pane.set_edgecolor("#243a4d")
+                except Exception:
+                    pass
+            try:
+                ax.set_box_aspect((1.0, 1.0, 0.55), zoom=1.35)
+            except Exception:
+                pass
+            ax.view_init(elev=32.0, azim=-52.0)
+            ax.set_title("立体热力图（单点合成）", color="#dcecf8", fontsize=10, pad=2)
+            self._mpl_canvas.draw_idle()
+        except Exception:
+            pass
 
     def _draw_series(self) -> None:
         canvas = self.series_canvas
@@ -1477,8 +1907,10 @@ class ForceMonitor:
             self.canvas.delete("all")
             width = max(2, self.canvas.winfo_width())
             height = max(2, self.canvas.winfo_height())
-            self.canvas.create_text(16, 14, anchor="nw", text="正交视图 | 先 Z 归零，再按压磁皮", fill="#9fb9cc", font=("Arial", 10))
+            self.canvas.create_text(16, 14, anchor="nw", text="正交视图 | 先 Z 归零，再按压磁皮",
+                                    fill="#9fb9cc", font=("Arial", 10))
             self._draw_force(width, height)
+            self._draw_surface()
             self._draw_series()
             self._force_changed = False
 

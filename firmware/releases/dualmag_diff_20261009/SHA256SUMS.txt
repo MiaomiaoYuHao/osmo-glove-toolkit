@@ -1,0 +1,2 @@
+f07bc123b314e8675866e6f996373c690ba86aca7170bed13d7dd7ea9866d498  BowieGlove_dualmag_diff.bin
+808b17fed0d03b9d803fa0101f97fc45fb26cee0ffd993ddc0d7a3e09344cb2a  BowieGlove_dualmag_diff.hex

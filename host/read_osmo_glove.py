@@ -24,10 +24,11 @@ import serial
 from cobs import cobs
 from serial.tools import list_ports
 
-# Keep the generated betterproto module local so the host application is
-# self-contained and does not depend on an absolute workspace path.
-HOST_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(HOST_ROOT))
+# Add the OSMO glove2robot package directory to sys.path so the generated
+# betterproto module can be imported without installing the repository.
+REPO_ROOT = Path(__file__).resolve().parent
+GLOVE2ROBOT_DIR = Path(r"C:\Users\18257\Desktop\Mocap\Xunbu_caphost_v6\_osmo_glove_research\labs\glove2robot")
+sys.path.insert(0, str(GLOVE2ROBOT_DIR))
 
 from utils import bowiepb as bpb  # noqa: E402
 
@@ -129,6 +130,8 @@ def message_to_row(message: Any) -> dict[str, Any]:
         "mag_x": mag.get("x", 0.0) if has_mag else None,
         "mag_y": mag.get("y", 0.0) if has_mag else None,
         "mag_z": mag.get("z", 0.0) if has_mag else None,
+        "mag_seconds": mag.get("seconds", 0) if has_mag else None,
+        "mag_nanoseconds": mag.get("nanoseconds", 0) if has_mag else None,
         "quat_x": quat.get("x", 0.0) if has_quat else None,
         "quat_y": quat.get("y", 0.0) if has_quat else None,
         "quat_z": quat.get("z", 0.0) if has_quat else None,
