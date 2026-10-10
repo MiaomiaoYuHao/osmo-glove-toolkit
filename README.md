@@ -23,7 +23,14 @@ This repository brings the complete work together instead of publishing only the
 
 ![Attitude interface](docs/assets/shot_1.png)
 
-## Firmware variants
+#### Contributors
+
+- **Yuhao Lin** ([@MiaomiaoYuHao](https://github.com/MiaomiaoYuHao)) — Firmware, upper computer, sensor calibration, algorithm, system integration, drift compensation.
+- **Eugene Chen** ([@EugeneCHAN06](https://github.com/EugeneCHAN06)) — Material preparation, TPU structure fabrication, Mu-metal shielding processing, glove assembly; PCB hardware development (ongoing).
+
+Special thanks to [Jessica Yin](https://github.com/jessicayin) and the OSMO team for the open-source hardware.
+
+ Firmware variants
 
 | Variant | Source | Prebuilt | Purpose |
 |---|---|---|---|
